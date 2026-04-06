@@ -1,6 +1,11 @@
 import{useState,useEffect,useCallback}from"react";
-var API="/api/anthropic/v1/messages",MAN="/api/manatal/open/v3",AK=import.meta.env.VITE_ANTHROPIC_API_KEY,MT=import.meta.env.VITE_MANATAL_TOKEN;
+var IS_PROD=window.location.hostname!=="localhost";
+var API="/api/anthropic/v1/messages",MAN="/api/manatal/open/v3",AK=import.meta.env.VITE_ANTHROPIC_API_KEY||"",MT=import.meta.env.VITE_MANATAL_TOKEN||"";
 var AH={"Content-Type":"application/json","x-api-key":AK,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
+if(IS_PROD){var _origFetch=window.fetch;window.fetch=async function(url,opts){
+if(typeof url==="string"&&url.startsWith("/api/anthropic")){var path=url.replace("/api/anthropic","");var bd=opts&&opts.body?JSON.parse(opts.body):{};return _origFetch("/api/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"anthropic",path:path,body:bd})})}
+if(typeof url==="string"&&url.startsWith("/api/manatal")){var mpath=url.replace("/api/manatal","");if(opts&&opts.method==="POST"){var mbd=opts.body?JSON.parse(opts.body):{};return _origFetch("/api/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"manatal_post",path:mpath,body:mbd})})}return _origFetch("/api/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"manatal",path:mpath})})}
+return _origFetch(url,opts)}}
 function strip(html){var d=document.createElement("div");d.innerHTML=html;return d.textContent||d.innerText||""}
 function gmail(to,su,bo){window.open("https://mail.google.com/mail/?view=cm&fs=1&to="+encodeURIComponent(to)+"&su="+encodeURIComponent(su)+"&body="+encodeURIComponent(bo),"_blank")}
 function Badge(props){var c={default:"#818cf8",success:"#34d399",info:"#38bdf8",error:"#ef4444",warning:"#fbbf24",muted:"#94a3b8"};var col=c[props.variant||"default"];return <span style={{color:col,background:col+"20",padding:"3px 10px",borderRadius:6,fontSize:11,fontWeight:600,textTransform:"uppercase"}}>{props.children}</span>}
