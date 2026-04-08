@@ -138,6 +138,9 @@ var[jobSort,setJobSort]=_s("newest");
 var[expandedJobs,setExpandedJobs]=_s(new Set());
 var[jobApplicants,setJobApplicants]=_s({});
 var[pipeline,setPipeline]=_s(function(){try{return JSON.parse(window.localStorage.getItem("pipeline")||"[]")}catch(e){return[]}});
+var[overnightData,setOvernightData]=_s(function(){try{var c=JSON.parse(window.localStorage.getItem("overnightScan"));if(c&&c.ts&&Date.now()-c.ts<43200000)return c.data;return null}catch(e){return null}});
+var[overnightLoading,setOvernightLoading]=_s(false);
+var fetchOvernight=async function(){setOvernightLoading(true);try{var r=await fetch("/api/overnight-scan");var d=await r.json();if(d.success){setOvernightData(d);try{window.localStorage.setItem("overnightScan",JSON.stringify({ts:Date.now(),data:d}))}catch(e){}}else{toast({title:"Scan failed",detail:d.error||"Unknown error",status:"error"})}}catch(e){toast({title:"Scan failed",detail:e.message,status:"error"})}setOvernightLoading(false)};
 function savePipeline(p){setPipeline(p);window.localStorage.setItem("pipeline",JSON.stringify(p))}
 var toast=function(t){setToasts(function(p){return p.concat([t])});setTimeout(function(){setToasts(function(p){return p.slice(1)})},4000)};
 var getOrgName=function(orgId){var o=orgs.find(function(x){return x.id===orgId});return o?o.name:"Unknown"};
@@ -224,6 +227,44 @@ return(<div style={{fontFamily:"system-ui,sans-serif",background:S.bg,minHeight:
 <div><div style={{color:"#f1f5f9",fontSize:14,fontWeight:600}}>{intv.candidate}</div><div style={{color:S.dim,fontSize:11}}>{intv.client+" - "+intv.owner}</div></div>
 <div style={{textAlign:"right"}}><div style={{color:intv.outcome==="placed"?"#34d399":"#818cf8",fontSize:12,fontWeight:500}}>{intv.outcome==="placed"?"Placed":""+intv.outcome}</div><div style={{color:"#475569",fontSize:10}}>{intv.date}</div></div>
 </div>})}
+</div>
+</div>
+<div style={{background:S.card,border:S.border,borderRadius:14,padding:24}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+<h3 style={{color:"#f1f5f9",fontSize:15,fontWeight:600,margin:0}}>{"Here's Who I Found Overnight"}</h3>
+<button onClick={fetchOvernight} disabled={overnightLoading} style={{padding:"8px 18px",borderRadius:8,fontSize:12,fontWeight:600,background:overnightLoading?"rgba(99,102,241,0.2)":"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",color:"white",cursor:overnightLoading?"default":"pointer",fontFamily:"inherit"}}>{overnightLoading?"Scanning...":"Run Overnight Scan"}</button>
+</div>
+{overnightLoading&&<div style={{padding:"40px 0",textAlign:"center"}}><span className="sp"/><span style={{color:S.dim,marginLeft:8}}>Scanning all active jobs... this takes about 45 seconds</span></div>}
+{!overnightLoading&&!overnightData&&<div style={{padding:"40px 0",textAlign:"center",color:"#475569"}}><div style={{fontSize:14}}>No overnight scan results yet</div><div style={{fontSize:12,marginTop:6}}>Click "Run Overnight Scan" or results will load automatically each morning at 7 AM ET</div></div>}
+{!overnightLoading&&overnightData&&<div>
+<div style={{display:"flex",gap:12,marginBottom:16}}>
+<div style={{flex:1,background:"rgba(99,102,241,0.08)",borderRadius:8,padding:"10px 14px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:"#6366f1"}}>{overnightData.totalJobs}</div><div style={{fontSize:10,color:"#64748b"}}>Active Jobs</div></div>
+<div style={{flex:1,background:"rgba(52,211,153,0.08)",borderRadius:8,padding:"10px 14px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:"#34d399"}}>{overnightData.jobsWithMatches}</div><div style={{fontSize:10,color:"#64748b"}}>Jobs Matched</div></div>
+<div style={{flex:1,background:"rgba(245,158,11,0.08)",borderRadius:8,padding:"10px 14px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:"#f59e0b"}}>{overnightData.candidatesSearched}</div><div style={{fontSize:10,color:"#64748b"}}>Candidates Searched</div></div>
+<div style={{flex:1,background:"rgba(129,140,248,0.08)",borderRadius:8,padding:"10px 14px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:"#818cf8"}}>{overnightData.uniqueSearchTerms}</div><div style={{fontSize:10,color:"#64748b"}}>Search Terms Used</div></div>
+</div>
+{(overnightData.matches||[]).length>0&&<div>
+<div style={{fontSize:12,fontWeight:600,color:"#94a3b8",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Best Match Per Role (sorted by score)</div>
+{(overnightData.matches||[]).map(function(m,mi){var scoreColor=m.score>=80?"#34d399":m.score>=60?"#f59e0b":"#ef4444";return <div key={mi} style={{display:"flex",alignItems:"center",gap:12,padding:"14px 16px",background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.04)",borderRadius:10,marginBottom:6,borderLeft:"3px solid "+scoreColor}}>
+<div style={{width:48,height:48,borderRadius:"50%",background:"conic-gradient("+scoreColor+" "+(m.score*3.6)+"deg, rgba(255,255,255,0.06) 0deg)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:38,height:38,borderRadius:"50%",background:"#0a0e1a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:scoreColor}}>{m.score}</div></div>
+<div style={{flex:1,minWidth:0}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+<div><div style={{fontSize:14,fontWeight:600,color:"#f1f5f9"}}>{m.jobTitle}</div><div style={{color:"#64748b",fontSize:11}}>{m.jobLocation||"Remote"}</div></div>
+<div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:11,color:"#94a3b8"}}>{m.jobSalary}</div></div>
+</div>
+<div style={{marginTop:6,padding:"8px 10px",background:"#0a0e1a",borderRadius:6}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div><span style={{fontSize:13,fontWeight:600,color:"#e2e8f0"}}>{m.candidateName}</span><span style={{color:"#64748b",fontSize:11,marginLeft:8}}>{m.candidateTitle+(m.candidateCompany?" at "+m.candidateCompany:"")}</span></div>
+<button onClick={function(){setJobSearch(m.jobTitle);setTab("jobs")}} style={{padding:"4px 10px",borderRadius:6,fontSize:10,background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",color:"#818cf8",cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>View Job</button>
+</div>
+<div style={{color:"#94a3b8",fontSize:11,marginTop:4}}>{m.reason}</div>
+</div>
+</div>
+</div>})}
+</div>}
+{(overnightData.matches||[]).length===0&&<div style={{padding:"20px",textAlign:"center",color:"#475569"}}>No matches found. Try running the scan again.</div>}
+<div style={{textAlign:"center",marginTop:12,fontSize:10,color:"#475569"}}>{"Scanned in "+overnightData.duration+" | "+overnightData.jobsScanned+" jobs searched | Cached for 12 hours"}</div>
+</div>}
 </div>
 </div>}
 
