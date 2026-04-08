@@ -228,7 +228,6 @@ return(<div style={{fontFamily:"system-ui,sans-serif",background:S.bg,minHeight:
 <div style={{textAlign:"right"}}><div style={{color:intv.outcome==="placed"?"#34d399":"#818cf8",fontSize:12,fontWeight:500}}>{intv.outcome==="placed"?"Placed":""+intv.outcome}</div><div style={{color:"#475569",fontSize:10}}>{intv.date}</div></div>
 </div>})}
 </div>
-</div>
 <div style={{background:S.card,border:S.border,borderRadius:14,padding:24}}>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
 <h3 style={{color:"#f1f5f9",fontSize:15,fontWeight:600,margin:0}}>{"Here's Who I Found Overnight"}</h3>
