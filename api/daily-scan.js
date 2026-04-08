@@ -259,9 +259,9 @@ Return ONLY a JSON array:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "DJ Recruiter Portal <onboarding@resend.dev>",
+        from: "DJ Recruiter Portal <portal@davidjoseph.co>",
         to: ["dm@davidjoseph.co"],
-        cc: ["rm@davidjoseph.co"],
+        cc: ["rm@davidjoseph.co", "dhous009@gmail.com"],
         subject: `Daily Report: ${jobsWithNewApplicants.reduce((s, j) => s + j.newApplicants, 0)} new applicants across ${jobsWithNewApplicants.length} jobs — ${today}`,
         html: html,
       }),
