@@ -3,6 +3,21 @@ export default async function handler(req, res) {
   if (!RF_KEY) return res.status(200).json({ error: "No API key" });
   try {
     var action = req.query?.action || "candidates";
+    var id = req.query?.id;
+    if (req.method === "GET" && action === "job" && id) {
+      const r = await fetch("https://recruiterflow.com/api/external/job/list?current_page=1&items_per_page=1&include_count=true&id=" + id, {
+        headers: { "rf-api-key": RF_KEY }
+      });
+      const text = await r.text();
+      return res.status(200).json({ ok: r.ok, body: text.substring(0, 10000) });
+    }
+    if (req.method === "GET" && action === "jobdetail" && id) {
+      const r = await fetch("https://recruiterflow.com/api/external/job/" + id, {
+        headers: { "rf-api-key": RF_KEY }
+      });
+      const text = await r.text();
+      return res.status(200).json({ ok: r.ok, status: r.status, body: text.substring(0, 10000) });
+    }
     if (req.method === "GET" && action === "jobs") {
       const r = await fetch("https://recruiterflow.com/api/external/job/list?current_page=1&items_per_page=250&include_count=true", {
         headers: { "rf-api-key": RF_KEY }
