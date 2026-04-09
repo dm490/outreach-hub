@@ -47,6 +47,17 @@ if(all.length>150)break}
 for(var coi=0;coi<companies.length&&all.length<180;coi++){await wait(500);onStatus("Step 3/6: Searching company '"+companies[coi]+"'...");var cr=await safeFetch(1,15,{desc:companies[coi]});for(var cci=0;cci<cr.candidates.length;cci++){var cc=cr.candidates[cci];if(!seen[cc.id]){seen[cc.id]=true;all.push(cc)}}}
 var jobLoc=(job.address||"").split(",")[0].trim();
 if(jobLoc&&jobLoc.length>2){await wait(500);var lr=await safeFetch(1,20,{location:jobLoc});for(var li=0;li<lr.candidates.length;li++){var lc=lr.candidates[li];if(!seen[lc.id]){seen[lc.id]=true;all.push(lc)}}}
+// === RECRUITERFLOW CANDIDATE SEARCH ===
+var rfCount=0;
+try{
+onStatus("Step 3b/6: Searching RecruiterFlow (10,000+ AEC candidates)...");
+var rfSkills=kws.slice(0,6).map(function(k){return[k]});
+var rfRes=await fetch("/api/recruiterflow",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"matchCandidates",params:{skillSets:rfSkills,maxTotal:100}})});
+if(rfRes.ok){var rfData=await rfRes.json();var rfCands=rfData.candidates||[];
+for(var ri=0;ri<rfCands.length;ri++){var rc=rfCands[ri];var rfKey="rf_"+rc.rf_id;if(!seen[rfKey]){seen[rfKey]=true;all.push({id:"rf_"+rc.rf_id,full_name:rc.full_name,email:rc.email,current_position:rc.current_position,current_company:rc.current_company,candidate_location:"",latest_degree:"",latest_university:"",source_type:"recruiterflow",description:rc.resume_text||"",_source:"RecruiterFlow",_skills:(rc.skills||[]).join(", ")});rfCount++}}}
+onStatus("Step 3b/6: Found "+rfCount+" RecruiterFlow candidates ("+all.length+" total)...");
+}catch(e){console.log("RF search error:",e)}
+// === END RECRUITERFLOW ===
 onStatus("Step 4/6: Building enriched profiles for "+all.length+" candidates...");
 var cList=all.map(function(c){var desc=(c.description||"").substring(0,2000);var profile={id:c.id,name:c.full_name,email:c.email,position:c.current_position,company:c.current_company,location:c.candidate_location,degree:c.latest_degree,university:c.latest_university,source:c.source_type,applied:c._applied?"YES":"no"};if(desc.length>50)profile.resume_text=desc;return JSON.stringify(profile)});
 var notesCtx=jobNotes?"\n\nSCREENING CRITERIA AND CLIENT FEEDBACK (CRITICAL - follow these strictly):\n"+jobNotes.substring(0,1500):"";
