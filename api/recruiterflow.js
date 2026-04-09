@@ -4,20 +4,18 @@ export default async function handler(req, res) {
   try {
     var action = req.query?.action || "candidates";
     if (req.method === "GET" && action === "jobs") {
-      const r = await fetch("https://recruiterflow.com/api/external/job/list?current_page=1&items_per_page=100&include_count=true", {
+      const r = await fetch("https://recruiterflow.com/api/external/job/list?current_page=1&items_per_page=250&include_count=true", {
         headers: { "rf-api-key": RF_KEY }
       });
-      const data = await r.json();
-      return res.status(200).json({ ok: r.ok, total: data.total_items, jobs: (data.data || []).map(j => ({ id: j.id, name: j.name || j.title, status: j.status || j.job_status, client: j.client_company_name })) });
+      const text = await r.text();
+      return res.status(200).json({ ok: r.ok, body: text.substring(0, 15000) });
     }
     if (req.method === "GET") {
-      const r = await fetch("https://recruiterflow.com/api/external/candidate/search", {
-        method: "POST",
-        headers: { "rf-api-key": RF_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ conjunction: "match-all", current_page: "1", filters: [{ conjunction: "contains", filter_type: "text", values: ["engineer"], key: "first_name" }], items_per_page: "3" })
+      const r = await fetch("https://recruiterflow.com/api/external/user/list?include_count=true", {
+        headers: { "rf-api-key": RF_KEY }
       });
       const text = await r.text();
-      return res.status(200).json({ ok: r.ok, status: r.status, body: text.substring(0, 3000) });
+      return res.status(200).json({ ok: r.ok, body: text.substring(0, 3000) });
     }
     if (req.method === "POST") {
       const { action, params } = req.body || {};
