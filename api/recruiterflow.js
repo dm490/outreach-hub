@@ -2,6 +2,14 @@ const RF_KEY = process.env.RECRUITERFLOW_API_KEY;
 export default async function handler(req, res) {
   if (!RF_KEY) return res.status(200).json({ error: "No API key" });
   try {
+    var action = req.query?.action || "candidates";
+    if (req.method === "GET" && action === "jobs") {
+      const r = await fetch("https://recruiterflow.com/api/external/job/list?current_page=1&items_per_page=100&include_count=true", {
+        headers: { "rf-api-key": RF_KEY }
+      });
+      const data = await r.json();
+      return res.status(200).json({ ok: r.ok, total: data.total_items, jobs: (data.data || []).map(j => ({ id: j.id, name: j.name || j.title, status: j.status || j.job_status, client: j.client_company_name })) });
+    }
     if (req.method === "GET") {
       const r = await fetch("https://recruiterflow.com/api/external/candidate/search", {
         method: "POST",
