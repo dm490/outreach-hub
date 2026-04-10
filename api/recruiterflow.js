@@ -2,24 +2,48 @@ const RF_KEY = process.env.RECRUITERFLOW_API_KEY;
 const RF_BASE = "https://recruiterflow.com/api/external";
 
 function normalizeCandidate(c) {
+  // Email is an ARRAY in RF, not email_id
+  const emails = c.email || [];
+  const primaryEmail = emails[0] || null;
+  
+  // Phone is phone_number (could be array or string)
+  const phone = Array.isArray(c.phone_number) ? c.phone_number[0] : (c.phone_number || null);
+  
+  // Build rich resume text from all available data
+  const resumeParts = [
+    (c.first_name || "") + " " + (c.last_name || ""),
+    c.current_designation ? "CURRENT ROLE: " + c.current_designation + " at " + (c.current_organization || "N/A") : "",
+    c.skills?.length ? "SKILLS: " + c.skills.join(", ") : "",
+    (c.education || []).length ? "EDUCATION: " + c.education.map(e => 
+      (e.degree || "") + (e.specialization ? " in " + e.specialization : "") + " from " + (e.school || "")
+    ).join("; ") : "",
+    (c.experience || []).length ? "EXPERIENCE:\n" + c.experience.slice(0, 8).map(e => 
+      "- " + (e.designation || "Role") + " at " + (e.company || "Company") + 
+      (e.from ? " (" + e.from.filter(Boolean).join("/") + " - " + (e.current ? "Present" : (e.to || []).filter(Boolean).join("/") || "N/A") + ")" : "") +
+      (e.description ? "\n  " + e.description.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().substring(0, 300) : "")
+    ).join("\n") : "",
+    c.candidate_summary ? "SUMMARY: " + c.candidate_summary.substring(0, 500) : "",
+    c.linkedin_profile ? "LinkedIn: " + c.linkedin_profile : ""
+  ].filter(Boolean);
+
   return {
     source: "recruiterflow",
     rf_id: c.id,
     full_name: (c.first_name || "") + " " + (c.last_name || ""),
-    email: c.email_id || null,
-    phone_number: c.phone || null,
+    email: primaryEmail,
+    all_emails: emails,
+    phone_number: phone,
     current_position: c.current_designation || null,
     current_company: c.current_organization || null,
     skills: c.skills || [],
-    resume_text: [
-      (c.first_name || "") + " " + (c.last_name || ""),
-      c.current_designation ? "Current: " + c.current_designation + " at " + (c.current_organization || "") : "",
-      c.skills?.length ? "Skills: " + c.skills.join(", ") : "",
-      (c.education || []).map(e => e.degree + " from " + e.school).join("; "),
-      (c.experience || []).slice(0, 5).map(e =>
-        (e.designation || "") + " at " + (e.company || "")
-      ).join("; ")
-    ].filter(Boolean).join("\n")
+    linkedin: c.linkedin_profile || null,
+    education: (c.education || []).map(e => (e.degree || "") + " from " + (e.school || "")).join("; "),
+    experience_summary: (c.experience || []).slice(0, 5).map(e => 
+      (e.designation || "") + " at " + (e.company || "")
+    ).join(" | "),
+    resume_text: resumeParts.join("\n"),
+    has_resume: false,
+    resume_url: null
   };
 }
 
