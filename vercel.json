@@ -1,4 +1,4 @@
-{
+﻿{
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
@@ -9,15 +9,5 @@
     "api/daily-scan.js": {
       "maxDuration": 300
     }
-  },
-  "crons": [
-    {
-      "path": "/api/overnight-scan",
-      "schedule": "30 11 * * *"
-    },
-    {
-      "path": "/api/daily-scan",
-      "schedule": "0 12 * * *"
-    }
-  ]
+  }
 }
