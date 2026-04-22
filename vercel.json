@@ -1,13 +1,1 @@
-﻿{
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
-  "functions": {
-    "api/overnight-scan.js": {
-      "maxDuration": 300
-    },
-    "api/daily-scan.js": {
-      "maxDuration": 300
-    }
-  }
-}
+{"buildCommand":"npm run build","outputDirectory":"dist","framework":"vite","functions":{"api/overnight-scan.js":{"maxDuration":300},"api/daily-scan.js":{"maxDuration":300}}}
