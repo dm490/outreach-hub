@@ -43,7 +43,10 @@ function normalizeCandidate(c) {
     ).join(" | "),
     resume_text: resumeParts.join("\n"),
     has_resume: false,
-    resume_url: null
+    resume_url: null,
+    raw_experience: c.experience || [],
+    raw_education: c.education || [],
+    candidate_summary: c.candidate_summary || ""
   };
 }
 
