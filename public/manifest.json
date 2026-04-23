@@ -1,0 +1,17 @@
+{
+  "name": "David Joseph & Company - Recruiter Portal",
+  "short_name": "DJ Recruiter",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0e1a",
+  "theme_color": "#6366f1",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/dj-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
