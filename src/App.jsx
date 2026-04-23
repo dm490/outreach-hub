@@ -487,7 +487,7 @@ return(<div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:S.bg,
 {s&&s.loading?<div style={{fontSize:14,color:"#78716c",animation:"spin .6s linear infinite"}}>◌</div>:s&&s.grade?<><div style={{fontSize:18,fontWeight:800,color:meta.color,lineHeight:1}}>{s.grade}</div><div style={{fontSize:8,color:"#78716c"}}>{s.score}</div></>:<div style={{fontSize:11,color:"#44403c"}}>—</div>}
 </div>
 <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700,color:"#e7e5e4",marginBottom:2}}>{c.name}</div><div style={{fontSize:11,color:"#78716c"}}>{c.title}<span style={{color:"#44403c"}}> @ </span><span style={{color:"#a8a29e"}}>{c.company}</span></div></div>
-{c._jobs&&<span style={{padding:"3px 8px",borderRadius:6,fontSize:9,fontWeight:700,background:"rgba(16,185,129,0.1)",color:"#10b981",letterSpacing:0.5}}>{"APPLIED · "+c._jobs.length+" job"+(c._jobs.length>1?"s":"")}</span>}
+{c._jobs&&<span style={{padding:"3px 8px",borderRadius:6,fontSize:9,fontWeight:700,background:"rgba(16,185,129,0.1)",color:"#10b981",letterSpacing:0.5,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c._jobs.length===1?"APPLIED · "+c._jobs[0].name:"APPLIED · "+c._jobs.length+" jobs"}</span>}
 {!s&&!rfScoringAll&&<button onClick={function(e){e.stopPropagation();handleRFScore(c)}} style={{padding:"6px 14px",borderRadius:8,background:"rgba(245,158,11,0.1)",border:"none",color:"#f59e0b",fontSize:10,fontWeight:700,cursor:"pointer"}}>Score</button>}
 <span style={{color:"#44403c",fontSize:12}}>{expanded?"▾":"▸"}</span>
 </div>
