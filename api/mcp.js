@@ -10,12 +10,13 @@
 //     source of truth.
 //
 // Auth: a shared secret (env var MCP_SHARED_SECRET).
-//   - Claude.ai custom connectors are URL-only, so the practical way to pass
-//     the secret is a query param:  https://<your-app>.vercel.app/api/mcp?key=THESECRET
-//   - For testing / other clients you can also send it as
-//     "Authorization: Bearer THESECRET" or the "x-mcp-key" header.
-//   - If MCP_SHARED_SECRET is unset, the endpoint runs OPEN (handy for a first
-//     test, but lock it down before sharing the URL).
+//   - The handshake (initialize/tools/list/ping) is OPEN so the connector can
+//     connect. The key is required for tools/call (the actual data calls).
+//   - Claude.ai custom connectors are URL-only, so pass the secret as a query
+//     param:  https://<your-app>.vercel.app/api/mcp?key=THESECRET
+//   - For testing you can also send it as "Authorization: Bearer THESECRET"
+//     or the "x-mcp-key" header.
+//   - If MCP_SHARED_SECRET is unset, everything runs OPEN.
 //
 // NOTE: this only protects the /api/mcp endpoint. Your /api/recruiterflow
 // endpoint is still open + CORS:* — see the notes I sent alongside this file.
@@ -201,6 +202,18 @@ async function handleMessage(req, msg) {
       return ok(id, { tools: TOOLS });
 
     case "tools/call": {
+      // Auth is enforced HERE (on the actual data calls), not on the
+      // handshake, so the connector can complete its initial connection.
+      if (!authorized(req)) {
+        return ok(id, {
+          content: [{
+            type: "text",
+            text: "Unauthorized: the MCP key is missing or invalid. The connector URL must " +
+                  "end with ?key=YOUR_SECRET matching MCP_SHARED_SECRET in Vercel."
+          }],
+          isError: true
+        });
+      }
       const name = params && params.name;
       const args = (params && params.arguments) || {};
       const result = await callRecruiterflow(req, name, args);
@@ -232,9 +245,9 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  if (!authorized(req)) {
-    return res.status(401).json(err(null, -32001, "Unauthorized: missing or invalid MCP key"));
-  }
+  // NOTE: no auth gate here. The handshake (initialize/tools/list/ping) must
+  // succeed unauthenticated so the connector can connect; the key is checked
+  // inside tools/call instead.
 
   // This stateless server has no server-initiated stream, so GET has nothing
   // to offer. 405 is a valid response for a Streamable HTTP server here.
