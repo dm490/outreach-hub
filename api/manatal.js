@@ -1,21 +1,22 @@
 // api/manatal.js
 //
 // Data-source client for Manatal (https://api.manatal.com/open/v3).
-// Mirrors the action interface of api/recruiterflow.js so the MCP layer
-// (api/mcp.js) can forward to it WITHOUT any other change.
+// Mirrors the action interface of the MCP layer (api/mcp.js forwards to it).
 //
-// Auth: MANATAL_TOKEN env var (already configured — the scan endpoints use it).
+// Auth: MANATAL_TOKEN env var.
 //
-// Skill-search note: Manatal's Open API has no server-side "skills" filter.
-// Its candidate filters are substring ("contains") matches. So we retrieve
-// using the fields Manatal CAN filter — description (the parsed resume summary,
-// which usually mentions skills explicitly) and current_position (job title) —
-// then RANK the pooled results against each candidate's structured skills[]
-// array. That ranking is the part that makes matching better than a raw
-// keyword search.
+// Skill-search note: Manatal's Open API has no server-side "skills" filter, and
+// its candidate filters are substring ("contains") matches that return results
+// ALPHABETICALLY. So we (a) retrieve using the fields Manatal CAN filter
+// (description = parsed resume summary, current_position = job title), sampling
+// pages across the whole result range to avoid an "A-names" bias, then
+// (b) RANK the pool against each candidate's structured skills[] plus optional
+// seniority / location / recency signals.
 
 const MANATAL_TOKEN = process.env.MANATAL_TOKEN;
 const MAN_BASE = "https://api.manatal.com/open/v3";
+
+const FIELDS = ["description", "current_position"];
 
 function strip(html) {
   return (html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -26,10 +27,7 @@ function wait(ms) {
 
 async function manGet(path) {
   const r = await fetch(MAN_BASE + path, {
-    headers: {
-      Authorization: "Token " + MANATAL_TOKEN,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: "Token " + MANATAL_TOKEN, "Content-Type": "application/json" },
   });
   if (!r.ok) {
     let body = "";
@@ -43,19 +41,109 @@ async function manGet(path) {
   return r.json();
 }
 
-// Pull the plain skill-name strings off a raw Manatal candidate.
 function skillNamesOf(c) {
   return Array.isArray(c.skills)
     ? c.skills.map((s) => (s && s.skill_name ? String(s.skill_name) : "")).filter(Boolean)
     : [];
 }
 
-// Map a raw Manatal candidate into the common shape the MCP tools expect.
+// ---- Matching helpers -----------------------------------------------------
+
+// Whole-token match that won't let "Java" match "JavaScript" or "React" match
+// "React Native", while still allowing "C++", "C#", ".NET" as tokens.
+function matchToken(text, termLower) {
+  if (!text) return false;
+  const esc = termLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(^|[^a-z0-9+#.])" + esc + "([^a-z0-9+#.]|$)", "i").test(text);
+}
+
+function textHaystack(c) {
+  return ((c.current_position || "") + " " + (c.description || "")).toLowerCase();
+}
+
+// Returns "structured" (skill tag), "text" (resume/title mention), or null.
+function skillHit(c, termLower) {
+  const have = skillNamesOf(c).map((s) => s.toLowerCase());
+  if (have.includes(termLower)) return "structured";
+  if (have.some((h) => matchToken(h, termLower))) return "structured";
+  if (matchToken(textHaystack(c), termLower)) return "text";
+  return null;
+}
+
+const SENIORITY_PATTERNS = [
+  { level: "lead", rx: /\b(principal|staff|lead|head|director|vp|chief|architect)\b/i },
+  { level: "senior", rx: /\b(senior|sr\.?|manager)\b/i },
+  { level: "junior", rx: /\b(junior|jr\.?|intern|entry[- ]?level|associate|trainee|graduate)\b/i },
+];
+function seniorityOf(title) {
+  const t = title || "";
+  for (const p of SENIORITY_PATTERNS) if (p.rx.test(t)) return p.level;
+  return "mid";
+}
+function seniorityBonus(candLevel, wanted) {
+  if (!wanted) return 0;
+  const order = { junior: 1, mid: 2, senior: 3, lead: 4 };
+  const w = order[String(wanted).toLowerCase()];
+  const c = order[candLevel];
+  if (!w || !c) return 0;
+  if (c === w) return 2;
+  if (w >= 3 && c >= w) return 2; // asking senior/lead, candidate is that or higher
+  if (Math.abs(c - w) === 1) return 0.5; // adjacent
+  return 0;
+}
+
+function recencyBonus(c) {
+  const d = c.updated_at || c.created_at;
+  if (!d) return 0;
+  const days = (Date.now() - new Date(d).getTime()) / 86400000;
+  if (isNaN(days)) return 0;
+  if (days <= 30) return 1;
+  if (days <= 90) return 0.5;
+  return 0;
+}
+
+// Score one raw candidate. Returns null if a required skill is missing.
+// opts: { preferred:[], required:[], seniority, location }
+function scoreCandidate(c, opts) {
+  const required = (opts.required || []).map((s) => String(s).toLowerCase());
+  const preferred = (opts.preferred || []).map((s) => String(s).toLowerCase());
+  const allWanted = Array.from(new Set([...required, ...preferred]));
+
+  let score = 0;
+  const matched = [];
+  for (const w of allWanted) {
+    const hit = skillHit(c, w);
+    if (hit === "structured") {
+      score += 3;
+      matched.push(w);
+    } else if (hit === "text") {
+      score += 1;
+      matched.push(w);
+    }
+  }
+
+  const missingRequired = required.filter((r) => !matched.includes(r));
+  if (required.length && missingRequired.length) return null; // hard filter
+
+  const candLevel = seniorityOf(c.current_position);
+  score += seniorityBonus(candLevel, opts.seniority);
+
+  if (opts.location) {
+    if ((c.candidate_location || "").toLowerCase().includes(String(opts.location).toLowerCase())) {
+      score += 2;
+    }
+  }
+  score += recencyBonus(c);
+
+  return { score, matched, missingRequired, seniority: candLevel };
+}
+
+// ---- Normalization --------------------------------------------------------
+
 function normalizeCandidate(c) {
   const skills = skillNamesOf(c);
   const description = strip(c.description || "");
   const education = [c.latest_degree, c.latest_university].filter(Boolean).join(" - ");
-
   const resumeParts = [
     c.full_name || "",
     c.current_position
@@ -78,7 +166,7 @@ function normalizeCandidate(c) {
     current_company: c.current_company || null,
     location: c.candidate_location || null,
     skills: skills,
-    linkedin: null, // not returned by the candidates list endpoint
+    linkedin: null,
     education: education,
     experience_summary: c.current_position
       ? c.current_position + (c.current_company ? " at " + c.current_company : "")
@@ -89,105 +177,101 @@ function normalizeCandidate(c) {
     candidate_tags: c.candidate_tags || [],
     candidate_industries: c.candidate_industries || [],
     description: description,
+    updated_at: c.updated_at || null,
   };
 }
 
-// Retrieve one page of candidates for a single term via a given filter field.
-async function manSearchField(field, term, perPage) {
+// ---- Retrieval (recall) ---------------------------------------------------
+
+async function fetchField(field, term, page, pageSize) {
   const data = await manGet(
-    "/candidates/?page=1&page_size=" +
-      (perPage || 25) +
-      "&" +
-      field +
-      "=" +
-      encodeURIComponent(term)
+    "/candidates/?page=" + page + "&page_size=" + pageSize + "&" + field + "=" + encodeURIComponent(term)
   );
-  return (data && data.results) || [];
+  return { results: (data && data.results) || [], count: (data && data.count) || 0 };
 }
 
-// Retrieve candidates for a single skill/term across the fields Manatal can
-// filter (resume summary + job title), de-duplicated by candidate id.
-async function retrieveForTerm(term, perPage) {
-  const byId = new Map();
-  // description (parsed resume summary) mentions skills explicitly -> best recall
-  try {
-    for (const c of await manSearchField("description", term, perPage)) {
-      if (!byId.has(c.id)) byId.set(c.id, c);
-    }
-  } catch (e) {
-    /* continue */
+// Which pages to read: always page 1, then evenly spread the rest across the
+// full range so we don't only see alphabetically-early candidates.
+function samplePages(totalPages, depth) {
+  if (totalPages <= 1) return [1];
+  if (totalPages <= depth) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const pages = new Set([1]);
+  const step = totalPages / depth;
+  for (let i = 1; i < depth; i++) {
+    pages.add(Math.min(totalPages, Math.max(2, Math.round(1 + i * step))));
   }
-  await wait(200);
-  // current_position (job title) catches role-style terms
-  try {
-    for (const c of await manSearchField("current_position", term, perPage)) {
-      if (!byId.has(c.id)) byId.set(c.id, c);
+  return Array.from(pages).sort((a, b) => a - b);
+}
+
+// Retrieve candidates for one term across both fields, sampling pages.
+// budget.calls caps total Manatal requests to keep latency bounded.
+async function retrieveForTerm(term, opts, budget) {
+  const pageSize = opts.pageSize || 100;
+  const depth = opts.depth || 4;
+  const byId = new Map();
+
+  for (const field of FIELDS) {
+    if (budget.calls <= 0) break;
+    let first;
+    try {
+      first = await fetchField(field, term, 1, pageSize);
+      budget.calls--;
+    } catch (e) {
+      continue;
     }
-  } catch (e) {
-    /* continue */
+    for (const c of first.results) if (!byId.has(c.id)) byId.set(c.id, c);
+
+    const totalPages = Math.ceil((first.count || 0) / pageSize);
+    const morePages = samplePages(totalPages, depth).filter((p) => p !== 1);
+    for (const p of morePages) {
+      if (budget.calls <= 0) break;
+      await wait(150);
+      try {
+        const r = await fetchField(field, term, p, pageSize);
+        budget.calls--;
+        for (const c of r.results) if (!byId.has(c.id)) byId.set(c.id, c);
+      } catch (e) {
+        /* skip page */
+      }
+    }
+    await wait(150);
   }
   return Array.from(byId.values());
 }
 
-// Score a raw candidate against the desired skills (already lowercased).
-// A structured skill hit weighs most; a title/summary text hit adds a little.
-function scoreAgainstSkills(rawCand, wantedLower) {
-  const have = skillNamesOf(rawCand).map((s) => s.toLowerCase());
-  const haystack = (
-    (rawCand.current_position || "") +
-    " " +
-    (rawCand.description || "")
-  ).toLowerCase();
-
-  const matched = [];
-  let score = 0;
-  for (const w of wantedLower) {
-    const inSkills = have.some((h) => h === w || h.includes(w) || w.includes(h));
-    const inText = haystack.includes(w);
-    if (inSkills) {
-      score += 3;
-      matched.push(w);
-    } else if (inText) {
-      score += 1;
-      matched.push(w);
-    }
-  }
-  return { score, matched };
-}
-
-// Core: given a flat list of skill terms, build a ranked candidate pool.
-async function skillSearch(terms, perTerm, limit) {
-  const pool = new Map(); // id -> raw candidate
-  const cap = (limit || 300) * 2;
+async function buildPool(terms, opts) {
+  const budget = { calls: opts.maxCalls || 60 };
+  const pool = new Map();
   for (const term of terms) {
-    if (pool.size >= cap) break;
-    const raw = await retrieveForTerm(term, perTerm || 25);
+    if (budget.calls <= 0) break;
+    const raw = await retrieveForTerm(term, opts, budget);
     for (const c of raw) if (!pool.has(c.id)) pool.set(c.id, c);
-    await wait(150);
   }
-  const wantedLower = terms.map((t) => String(t).toLowerCase());
-  return Array.from(pool.values())
-    .map((c) => {
-      const s = scoreAgainstSkills(c, wantedLower);
-      const norm = normalizeCandidate(c);
-      norm.match_score = s.score;
-      norm.matched_skills = s.matched;
-      return norm;
-    })
-    .sort((a, b) => b.match_score - a.match_score);
+  return Array.from(pool.values());
 }
 
-// Fetch jobs (optionally only active ones).
+// Rank a raw pool with the scoring function; drops required-skill misses.
+function rankPool(raw, opts) {
+  const out = [];
+  for (const c of raw) {
+    const s = scoreCandidate(c, opts);
+    if (!s) continue;
+    const n = normalizeCandidate(c);
+    n.match_score = s.score;
+    n.matched_skills = s.matched;
+    n.missing_required = s.missingRequired;
+    n.seniority = s.seniority;
+    out.push(n);
+  }
+  out.sort((a, b) => b.match_score - a.match_score);
+  return out;
+}
+
 async function fetchJobs(activeOnly) {
   const data = await manGet("/jobs/?page_size=100" + (activeOnly ? "&status=active" : ""));
   return (data && data.results) || [];
 }
 
-// Best-effort: which pipelines (jobs) is a candidate currently in?
-// NOTE: uses the candidate_id filter on /matches/. We also re-filter the
-// results by candidate id so correctness holds even if the server ignores the
-// param. If Manatal exposes a different filter name, this degrades gracefully
-// (candidate simply won't be marked "applied") rather than erroring.
 async function candidatePipelines(candidateId, jobMap) {
   try {
     const data = await manGet(
@@ -200,12 +284,13 @@ async function candidatePipelines(candidateId, jobMap) {
         job_id: m.job,
         job_name: (jobMap && jobMap[m.job]) || null,
         stage: m.stage && m.stage.name ? m.stage.name : null,
-        is_active: m.is_active !== false,
       }));
   } catch (e) {
     return [];
   }
 }
+
+// ---- Handler --------------------------------------------------------------
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -215,7 +300,6 @@ export default async function handler(req, res) {
 
   if (!MANATAL_TOKEN) return res.status(500).json({ error: "MANATAL_TOKEN not configured" });
 
-  // Lightweight health check.
   if (req.method === "GET") {
     try {
       const data = await manGet("/candidates/?page_size=1");
@@ -232,46 +316,53 @@ export default async function handler(req, res) {
   try {
     // ========== SIMPLE SKILL SEARCH ==========
     if (action === "searchBySkills") {
-      const { skills, perPage } = params || {};
+      const { skills, required, seniority, location, perPage, depth } = params || {};
       if (!skills || !skills.length) return res.status(400).json({ error: "skills array required" });
-      const ranked = await skillSearch(skills, 30, 200);
+
+      const terms = Array.from(new Set([...(required || []), ...skills].map(String)));
+      const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 50 });
+      const ranked = rankPool(raw, { preferred: skills, required: required || [], seniority, location });
       const perP = perPage || 100;
+
       return res.status(200).json({
         count: Math.min(ranked.length, perP),
         source: "manatal",
+        pooled: raw.length,
         candidates: ranked.slice(0, perP),
       });
     }
 
     // ========== MATCH CANDIDATES (multiple skill sets) ==========
     if (action === "matchCandidates") {
-      const { skillSets, maxTotal } = params || {};
+      const { skillSets, required, seniority, location, maxTotal, depth } = params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
       const limit = maxTotal || 300;
 
-      // Flatten to unique terms for retrieval, then rank against the full set.
-      const terms = Array.from(new Set(skillSets.flat().map((s) => String(s))));
-      const ranked = await skillSearch(terms, 25, limit);
+      const preferred = Array.from(new Set(skillSets.flat().map(String)));
+      const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 60 });
+      const ranked = rankPool(raw, { preferred, required: required || [], seniority, location });
 
       return res.status(200).json({
         count: Math.min(ranked.length, limit),
         source: "manatal",
-        searchStats: { terms: terms.length, pooled: ranked.length },
+        searchStats: { terms: terms.length, pooled: raw.length, ranked: ranked.length },
         candidates: ranked.slice(0, limit),
       });
     }
 
     // ========== MATCH APPLIED CANDIDATES (already in a pipeline) ==========
     if (action === "matchAppliedCandidates") {
-      const { skillSets, maxTotal, checkLimit } = params || {};
+      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth } = params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
 
-      const terms = Array.from(new Set(skillSets.flat().map((s) => String(s))));
-      const ranked = await skillSearch(terms, 25, maxTotal || 200);
+      const preferred = Array.from(new Set(skillSets.flat().map(String)));
+      const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const raw = await buildPool(terms, { depth: depth || 3, pageSize: 100, maxCalls: 50 });
+      const ranked = rankPool(raw, { preferred, required: required || [], seniority, location });
 
-      // Build a job id -> title map once for labelling pipelines.
       const jobMap = {};
       try {
         for (const j of await fetchJobs(false)) jobMap[j.id] = j.position_name;
@@ -284,11 +375,7 @@ export default async function handler(req, res) {
         const pipes = await candidatePipelines(cand.manatal_id, jobMap);
         checked++;
         if (pipes.length > 0) {
-          cand._jobs = pipes.map((p) => ({
-            id: p.job_id,
-            name: p.job_name,
-            currentStage: p.stage || "Unknown",
-          }));
+          cand._jobs = pipes.map((p) => ({ id: p.job_id, name: p.job_name, currentStage: p.stage || "Unknown" }));
           applied.push(cand);
         }
         if (checked % 5 === 0) await wait(200);
