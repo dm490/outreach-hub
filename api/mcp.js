@@ -1,13 +1,12 @@
 // api/mcp.js
 //
 // A minimal, stateless MCP (Model Context Protocol) server that exposes your
-// existing Recruiterflow integration to Claude as connector "tools".
+// Manatal integration to Claude as connector "tools".
 //
 // Transport: Streamable HTTP (JSON-RPC 2.0 over a single POST endpoint).
 //   - No SSE, no session state -> fits Vercel serverless cleanly.
-//   - It does NOT re-implement the Recruiterflow calls. It forwards to your
-//     existing /api/recruiterflow function, so that file stays the single
-//     source of truth.
+//   - It does NOT re-implement the Manatal calls. It forwards to your
+//     /api/manatal function, so that file stays the single source of truth.
 //
 // Auth: a shared secret (env var MCP_SHARED_SECRET).
 //   - The handshake (initialize/tools/list/ping) is OPEN so the connector can
@@ -17,14 +16,11 @@
 //   - For testing you can also send it as "Authorization: Bearer THESECRET"
 //     or the "x-mcp-key" header.
 //   - If MCP_SHARED_SECRET is unset, everything runs OPEN.
-//
-// NOTE: this only protects the /api/mcp endpoint. Your /api/recruiterflow
-// endpoint is still open + CORS:* — see the notes I sent alongside this file.
 
 const SECRET = process.env.MCP_SHARED_SECRET || null;
 const PROTOCOL_FALLBACK = "2025-06-18";
 
-const SERVER_INFO = { name: "recruiterflow-mcp", version: "1.0.0" };
+const SERVER_INFO = { name: "manatal-mcp", version: "1.0.0" };
 
 // ---- Tool definitions (JSON Schema input) ---------------------------------
 
@@ -32,44 +28,47 @@ const TOOLS = [
   {
     name: "search_candidates_by_skills",
     description:
-      "Search Recruiterflow for candidates matching a list of skills (match-any). " +
-      "Returns a compact list of candidates with name, email, current role, company, and skills.",
+      "Search Manatal for candidates matching a list of skills. Retrieves from the " +
+      "resume summary and job title, then ranks by each candidate's structured skill " +
+      "tags. Returns a compact list with name, email, current role, company, location, " +
+      "skills, and which requested skills matched.",
     inputSchema: {
       type: "object",
       properties: {
         skills: {
           type: "array",
           items: { type: "string" },
-          description: "Skills to match, e.g. [\"React\", \"TypeScript\"]."
+          description: 'Skills to match, e.g. ["React", "TypeScript"].',
         },
         page: { type: "integer", description: "Page number (default 1)." },
-        perPage: { type: "integer", description: "Results per page, max 100 (default 100)." }
+        perPage: { type: "integer", description: "Results per page, max 100 (default 100)." },
       },
-      required: ["skills"]
-    }
+      required: ["skills"],
+    },
   },
   {
     name: "match_candidates",
     description:
-      "Run several skill-set searches at once, de-duplicate, and return up to maxTotal " +
-      "candidates. Use when you have multiple skill combinations to cover for a role.",
+      "Run several skill-set searches at once, de-duplicate, rank by skill overlap, and " +
+      "return up to maxTotal candidates. Use when you have multiple skill combinations to " +
+      "cover for a role.",
     inputSchema: {
       type: "object",
       properties: {
         skillSets: {
           type: "array",
           items: { type: "array", items: { type: "string" } },
-          description: "Array of skill groups, e.g. [[\"React\",\"Node\"],[\"Python\",\"Django\"]]."
+          description: 'Array of skill groups, e.g. [["React","Node"],["Python","Django"]].',
         },
-        maxTotal: { type: "integer", description: "Max candidates to return (default 300)." }
+        maxTotal: { type: "integer", description: "Max candidates to return (default 300)." },
       },
-      required: ["skillSets"]
-    }
+      required: ["skillSets"],
+    },
   },
   {
     name: "match_applied_candidates",
     description:
-      "Like match_candidates, but also checks each candidate's stage movements and only " +
+      "Like match_candidates, but also checks each candidate's pipeline membership and only " +
       "returns those already in a job pipeline. Includes their current pipeline stage(s).",
     inputSchema: {
       type: "object",
@@ -77,28 +76,28 @@ const TOOLS = [
         skillSets: {
           type: "array",
           items: { type: "array", items: { type: "string" } },
-          description: "Array of skill groups."
+          description: "Array of skill groups.",
         },
         maxTotal: { type: "integer", description: "Max candidates to pull from skill search (default 200)." },
-        checkLimit: { type: "integer", description: "How many top candidates to check for pipeline activity (default 60)." }
+        checkLimit: { type: "integer", description: "How many top candidates to check for pipeline activity (default 60)." },
       },
-      required: ["skillSets"]
-    }
+      required: ["skillSets"],
+    },
   },
   {
     name: "list_jobs",
-    description: "List all jobs/open roles in Recruiterflow.",
-    inputSchema: { type: "object", properties: {} }
+    description: "List all active jobs/open roles in Manatal.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "test_connection",
-    description: "Verify the Recruiterflow API key works by listing users. Returns success true/false.",
-    inputSchema: { type: "object", properties: {} }
-  }
+    description: "Verify the Manatal API token works. Returns success plus total candidate count.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
-// Map MCP tool name -> the action/params your /api/recruiterflow expects.
-function toRecruiterflowCall(name, args) {
+// Map MCP tool name -> the action/params your /api/manatal expects.
+function toManatalCall(name, args) {
   const a = args || {};
   switch (name) {
     case "search_candidates_by_skills":
@@ -116,22 +115,24 @@ function toRecruiterflowCall(name, args) {
   }
 }
 
-// Trim heavy candidate objects (drop resume_text / raw_* blobs) so tool
+// Trim heavy candidate objects (drop resume_text / description blobs) so tool
 // responses stay a sane size for the model.
 function compactCandidate(c) {
   if (!c || typeof c !== "object") return c;
   return {
-    rf_id: c.rf_id,
+    manatal_id: c.manatal_id,
     full_name: c.full_name,
     email: c.email,
     phone_number: c.phone_number,
     current_position: c.current_position,
     current_company: c.current_company,
-    skills: c.skills,
-    linkedin: c.linkedin,
+    location: c.location,
+    skills: (c.skills || []).slice(0, 30),
+    matched_skills: c.matched_skills,
+    match_score: c.match_score,
     education: c.education,
     experience_summary: c.experience_summary,
-    ...(c._jobs ? { jobs: c._jobs } : {})
+    ...(c._jobs ? { jobs: c._jobs } : {}),
   };
 }
 
@@ -158,23 +159,23 @@ function authorized(req) {
 const ok = (id, result) => ({ jsonrpc: "2.0", id, result });
 const err = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
 
-async function callRecruiterflow(req, name, args) {
+async function callManatal(req, name, args) {
   const base = `https://${req.headers.host}`;
-  const payload = toRecruiterflowCall(name, args);
+  const payload = toManatalCall(name, args);
   if (!payload) return { isError: true, text: `Unknown tool: ${name}` };
 
   try {
-    const r = await fetch(`${base}/api/recruiterflow`, {
+    const r = await fetch(`${base}/api/manatal`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // forward the secret in case you later lock down /api/recruiterflow too
-        ...(SECRET ? { "x-mcp-key": SECRET } : {})
+        // forward the secret in case you later lock down /api/manatal too
+        ...(SECRET ? { "x-mcp-key": SECRET } : {}),
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
     const data = await r.json();
-    if (!r.ok) return { isError: true, text: `Recruiterflow error (${r.status}): ${JSON.stringify(data)}` };
+    if (!r.ok) return { isError: true, text: `Manatal error (${r.status}): ${JSON.stringify(data)}` };
     return { isError: false, text: JSON.stringify(compactResult(data), null, 2) };
   } catch (e) {
     return { isError: true, text: `Request failed: ${e.message}` };
@@ -188,13 +189,14 @@ async function handleMessage(req, msg) {
 
   switch (method) {
     case "initialize": {
-      const requested = params && typeof params.protocolVersion === "string"
-        ? params.protocolVersion
-        : PROTOCOL_FALLBACK;
+      const requested =
+        params && typeof params.protocolVersion === "string"
+          ? params.protocolVersion
+          : PROTOCOL_FALLBACK;
       return ok(id, {
         protocolVersion: requested,
         capabilities: { tools: {} },
-        serverInfo: SERVER_INFO
+        serverInfo: SERVER_INFO,
       });
     }
 
@@ -206,20 +208,23 @@ async function handleMessage(req, msg) {
       // handshake, so the connector can complete its initial connection.
       if (!authorized(req)) {
         return ok(id, {
-          content: [{
-            type: "text",
-            text: "Unauthorized: the MCP key is missing or invalid. The connector URL must " +
-                  "end with ?key=YOUR_SECRET matching MCP_SHARED_SECRET in Vercel."
-          }],
-          isError: true
+          content: [
+            {
+              type: "text",
+              text:
+                "Unauthorized: the MCP key is missing or invalid. The connector URL must " +
+                "end with ?key=YOUR_SECRET matching MCP_SHARED_SECRET in Vercel.",
+            },
+          ],
+          isError: true,
         });
       }
       const name = params && params.name;
       const args = (params && params.arguments) || {};
-      const result = await callRecruiterflow(req, name, args);
+      const result = await callManatal(req, name, args);
       return ok(id, {
         content: [{ type: "text", text: result.text }],
-        isError: result.isError
+        isError: result.isError,
       });
     }
 
@@ -249,8 +254,6 @@ export default async function handler(req, res) {
   // succeed unauthenticated so the connector can connect; the key is checked
   // inside tools/call instead.
 
-  // This stateless server has no server-initiated stream, so GET has nothing
-  // to offer. 405 is a valid response for a Streamable HTTP server here.
   if (req.method === "GET") {
     return res.status(405).json(err(null, -32000, "Method Not Allowed: use POST for JSON-RPC"));
   }
@@ -261,7 +264,11 @@ export default async function handler(req, res) {
 
   let body = req.body;
   if (typeof body === "string") {
-    try { body = JSON.parse(body); } catch { body = null; }
+    try {
+      body = JSON.parse(body);
+    } catch {
+      body = null;
+    }
   }
   if (!body) return res.status(400).json(err(null, -32700, "Parse error: empty or invalid JSON body"));
 
@@ -272,7 +279,6 @@ export default async function handler(req, res) {
         const r = await handleMessage(req, msg);
         if (r) responses.push(r);
       }
-      // Batch of only notifications -> 202 with no body.
       if (responses.length === 0) return res.status(202).end();
       return res.status(200).json(responses);
     }
