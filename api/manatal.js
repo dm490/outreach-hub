@@ -72,6 +72,56 @@ async function callClaude(prompt, maxTokens) {
   return (data.content || []).map((b) => b.text || "").join("");
 }
 
+// ---- Query expansion (recall) ---------------------------------------------
+//
+// Manatal search is literal substring matching, so "React" never finds a
+// profile that only says "ReactJS". We widen each search term into its close
+// variants (abbreviations, alternate spellings, .js-style suffixes, tight
+// synonyms) before hitting Manatal. One batched Claude call; falls back to the
+// original terms if the key is missing or the response can't be parsed.
+// Originals are always kept and searched first, so this only ever ADDS recall.
+const EXPAND_MAX_VARIANTS = 3; // extra variants per term (excludes the original)
+const EXPAND_MAX_TERMS = 24; // hard cap on total terms sent to retrieval
+
+async function expandTerms(terms) {
+  const base = Array.from(new Set(terms.map((t) => String(t).trim()).filter(Boolean)));
+  if (!ANTHROPIC_KEY || !base.length) return base;
+
+  const prompt =
+    "You expand recruiting search terms into close variants to widen a keyword search. " +
+    "For EACH term return up to " +
+    EXPAND_MAX_VARIANTS +
+    " ADDITIONAL variants: common abbreviations, alternate spellings, and formatting " +
+    '(e.g. "React" -> "ReactJS", "React.js"; "Kubernetes" -> "K8s"; "Machine Learning" -> "ML"). ' +
+    "Keep them TIGHT and high-precision -- do NOT add broad or loosely-related terms. " +
+    "Return ONLY a JSON object mapping each input term to an array of variant strings " +
+    "(excluding the original).\n\nTerms: " +
+    JSON.stringify(base);
+
+  try {
+    const resp = await callClaude(prompt, 600);
+    const m = resp.match(/\{[\s\S]*\}/);
+    if (!m) return base;
+    const map = JSON.parse(m[0]);
+
+    const seen = new Set(base.map((t) => t.toLowerCase()));
+    const ordered = [...base]; // originals first, so they're never starved of budget
+    for (const t of base) {
+      const variants = Array.isArray(map[t]) ? map[t] : [];
+      for (const v of variants.slice(0, EXPAND_MAX_VARIANTS)) {
+        const s = String(v).trim();
+        if (s && !seen.has(s.toLowerCase())) {
+          seen.add(s.toLowerCase());
+          ordered.push(s);
+        }
+      }
+    }
+    return ordered.slice(0, EXPAND_MAX_TERMS);
+  } catch (e) {
+    return base;
+  }
+}
+
 function skillNamesOf(c) {
   return Array.isArray(c.skills)
     ? c.skills.map((s) => (s && s.skill_name ? String(s.skill_name) : "")).filter(Boolean)
@@ -436,12 +486,13 @@ export default async function handler(req, res) {
   try {
     // ========== SIMPLE SKILL SEARCH ==========
     if (action === "searchBySkills") {
-      const { skills, required, seniority, location, perPage, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+      const { skills, required, seniority, location, perPage, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
         params || {};
       if (!skills || !skills.length) return res.status(400).json({ error: "skills array required" });
 
-      const terms = Array.from(new Set([...(required || []), ...skills].map(String)));
-      const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 50 });
+      const baseTerms = Array.from(new Set([...(required || []), ...skills].map(String)));
+      const terms = expandQuery === false ? baseTerms : await expandTerms(baseTerms);
+      const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 60 });
       const ranked = rankPool(raw, {
         preferred: skills,
         required: required || [],
@@ -462,6 +513,7 @@ export default async function handler(req, res) {
         count: Math.min(ranked.length, perP),
         source: "manatal",
         pooled: raw.length,
+        queryTerms: terms.length,
         greenFlags: greenFlags || [],
         aiGreenFlagsApplied: aiMeta.aiApplied,
         candidates: ranked.slice(0, perP),
@@ -470,14 +522,15 @@ export default async function handler(req, res) {
 
     // ========== MATCH CANDIDATES (multiple skill sets) ==========
     if (action === "matchCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+      const { skillSets, required, seniority, location, maxTotal, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
         params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
       const limit = maxTotal || 300;
 
       const preferred = Array.from(new Set(skillSets.flat().map(String)));
-      const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const baseTerms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const terms = expandQuery === false ? baseTerms : await expandTerms(baseTerms);
       const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 60 });
       const ranked = rankPool(raw, {
         preferred,
@@ -506,13 +559,14 @@ export default async function handler(req, res) {
 
     // ========== MATCH APPLIED CANDIDATES (already in a pipeline) ==========
     if (action === "matchAppliedCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
         params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
 
       const preferred = Array.from(new Set(skillSets.flat().map(String)));
-      const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const baseTerms = Array.from(new Set([...(required || []).map(String), ...preferred]));
+      const terms = expandQuery === false ? baseTerms : await expandTerms(baseTerms);
       const raw = await buildPool(terms, { depth: depth || 3, pageSize: 100, maxCalls: 50 });
       const ranked = rankPool(raw, {
         preferred,

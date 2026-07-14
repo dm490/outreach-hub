@@ -20,7 +20,7 @@
 const SECRET = process.env.MCP_SHARED_SECRET || null;
 const PROTOCOL_FALLBACK = "2025-06-18";
 
-const SERVER_INFO = { name: "manatal-mcp", version: "1.2.0" };
+const SERVER_INFO = { name: "manatal-mcp", version: "1.3.0" };
 
 // ---- Tool definitions (JSON Schema input) ---------------------------------
 
@@ -36,6 +36,10 @@ const GREEN_FLAGS_DESC =
 const AI_GREEN_DESC =
   "Optional. Set false to skip the AI semantic pass on green flags and use fast keyword-only " +
   "matching (default true when greenFlags are provided).";
+const EXPAND_QUERY_DESC =
+  "Optional. Query expansion widens recall by also searching common variants of each skill " +
+  "(e.g. \"React\" also finds \"ReactJS\"/\"React.js\", \"Kubernetes\" also finds \"K8s\"). " +
+  "On by default; set false for a faster, narrower literal search.";
 
 const TOOLS = [
   {
@@ -60,6 +64,7 @@ const TOOLS = [
         location: { type: "string", description: LOCATION_DESC },
         perPage: { type: "integer", description: "Results to return, max 100 (default 100)." },
         depth: { type: "integer", description: "Pages sampled per field per skill (default 4). Higher = more recall, slower." },
+        expandQuery: { type: "boolean", description: EXPAND_QUERY_DESC },
       },
       required: ["skills"],
     },
@@ -86,6 +91,7 @@ const TOOLS = [
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to return (default 300)." },
         depth: { type: "integer", description: "Pages sampled per field per skill (default 4)." },
+        expandQuery: { type: "boolean", description: EXPAND_QUERY_DESC },
       },
       required: ["skillSets"],
     },
@@ -112,6 +118,7 @@ const TOOLS = [
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to pull from skill search (default 200)." },
         checkLimit: { type: "integer", description: "How many top candidates to check for pipeline activity (default 60)." },
+        expandQuery: { type: "boolean", description: EXPAND_QUERY_DESC },
       },
       required: ["skillSets"],
     },
@@ -144,6 +151,7 @@ function toManatalCall(name, args) {
           location: a.location,
           perPage: a.perPage,
           depth: a.depth,
+          expandQuery: a.expandQuery,
         },
       };
     case "match_candidates":
@@ -158,6 +166,7 @@ function toManatalCall(name, args) {
           location: a.location,
           maxTotal: a.maxTotal,
           depth: a.depth,
+          expandQuery: a.expandQuery,
         },
       };
     case "match_applied_candidates":
@@ -172,6 +181,7 @@ function toManatalCall(name, args) {
           location: a.location,
           maxTotal: a.maxTotal,
           checkLimit: a.checkLimit,
+          expandQuery: a.expandQuery,
         },
       };
     case "list_jobs":
