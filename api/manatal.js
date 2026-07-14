@@ -12,11 +12,24 @@
 // pages across the whole result range to avoid an "A-names" bias, then
 // (b) RANK the pool against each candidate's structured skills[] plus optional
 // seniority / location / recency signals.
+//
+// Green flags: positive, free-text differentiators from the job (e.g. "founded
+// a startup", "open-source contributor"). They are a SOFT signal handled in two
+// layers -- a cheap deterministic keyword bonus, and an optional AI semantic
+// pass that catches paraphrases. Green flags only ever ADD score; they never
+// exclude a candidate the way a missing required skill does.
 
 const MANATAL_TOKEN = process.env.MANATAL_TOKEN;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const MAN_BASE = "https://api.manatal.com/open/v3";
 
 const FIELDS = ["description", "current_position"];
+
+// Green-flag tuning knobs (kept as named constants so they're easy to adjust).
+const GREEN_FLAG_KEYWORD_BONUS = 2; // per green flag whose text appears in the profile
+const AI_GREEN_WEIGHT = 1.0; // green_flag_score (0-10) * weight, added to match_score
+const AI_GREEN_MODEL = "claude-sonnet-4-6";
+const AI_GREEN_DEFAULT_LIMIT = 25; // how many top candidates get the AI pass
 
 function strip(html) {
   return (html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -39,6 +52,24 @@ async function manGet(path) {
     throw err;
   }
   return r.json();
+}
+
+async function callClaude(prompt, maxTokens) {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: AI_GREEN_MODEL,
+      max_tokens: maxTokens || 1500,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const data = await r.json();
+  return (data.content || []).map((b) => b.text || "").join("");
 }
 
 function skillNamesOf(c) {
@@ -68,6 +99,19 @@ function skillHit(c, termLower) {
   if (have.some((h) => matchToken(h, termLower))) return "structured";
   if (matchToken(textHaystack(c), termLower)) return "text";
   return null;
+}
+
+// Green flags -- deterministic keyword layer. Award a hit when the flag's text
+// shows up in the candidate's title, resume summary, or skill tags. Literal by
+// design; the AI layer below handles paraphrases.
+function greenFlagKeywordHits(c, flagsLower) {
+  if (!flagsLower.length) return [];
+  const hay = textHaystack(c) + " " + skillNamesOf(c).join(" ").toLowerCase();
+  const hits = [];
+  for (const f of flagsLower) {
+    if (f && hay.includes(f)) hits.push(f);
+  }
+  return hits;
 }
 
 const SENIORITY_PATTERNS = [
@@ -103,7 +147,7 @@ function recencyBonus(c) {
 }
 
 // Score one raw candidate. Returns null if a required skill is missing.
-// opts: { preferred:[], required:[], seniority, location }
+// opts: { preferred:[], required:[], seniority, location, greenFlags:[] }
 function scoreCandidate(c, opts) {
   const required = (opts.required || []).map((s) => String(s).toLowerCase());
   const preferred = (opts.preferred || []).map((s) => String(s).toLowerCase());
@@ -135,7 +179,12 @@ function scoreCandidate(c, opts) {
   }
   score += recencyBonus(c);
 
-  return { score, matched, missingRequired, seniority: candLevel };
+  // Green flags -- keyword layer (soft bonus, never a filter).
+  const greenFlags = (opts.greenFlags || []).map((s) => String(s).toLowerCase());
+  const matchedGreen = greenFlagKeywordHits(c, greenFlags);
+  score += matchedGreen.length * GREEN_FLAG_KEYWORD_BONUS;
+
+  return { score, matched, missingRequired, seniority: candLevel, matchedGreen };
 }
 
 // ---- Normalization --------------------------------------------------------
@@ -261,10 +310,81 @@ function rankPool(raw, opts) {
     n.matched_skills = s.matched;
     n.missing_required = s.missingRequired;
     n.seniority = s.seniority;
+    n.matched_green_flags = s.matchedGreen;
     out.push(n);
   }
   out.sort((a, b) => b.match_score - a.match_score);
   return out;
+}
+
+// ---- Green flags: AI (semantic) layer -------------------------------------
+//
+// Runs on the top `limit` keyword-ranked candidates, asks Claude to judge how
+// well each embodies the job's green flags (catching paraphrases the keyword
+// layer misses), and blends that into a final_score used for the final sort.
+// Degrades gracefully: if the key is missing, there are no green flags, or the
+// call fails, every candidate simply keeps match_score as final_score.
+async function applyAiGreenFlags(ranked, greenFlags, limit) {
+  // Baseline: everyone's final score starts at their keyword score.
+  for (const c of ranked) c.final_score = c.match_score;
+
+  if (!ANTHROPIC_KEY) return { aiApplied: false, reason: "no_anthropic_key" };
+  if (!greenFlags || !greenFlags.length) return { aiApplied: false, reason: "no_green_flags" };
+  if (!ranked.length) return { aiApplied: false, reason: "empty_pool" };
+
+  const shortlist = ranked.slice(0, limit || AI_GREEN_DEFAULT_LIMIT);
+
+  const prompt =
+    "You are an expert recruiter. Below is a list of GREEN FLAGS for a role -- " +
+    "positive, differentiating qualities that make a candidate a strong fit. For EACH candidate, " +
+    "judge how well their profile embodies these green flags, INCLUDING paraphrased or implied " +
+    'evidence (e.g. "co-founded an early-stage company" satisfies "startup founder"). ' +
+    "Score 0-10 (0 = no evidence, 10 = clearly embodies most/all) and give a one-line reason.\n\n" +
+    "GREEN FLAGS:\n" +
+    greenFlags.map((f) => "- " + f).join("\n") +
+    "\n\nCANDIDATES:\n" +
+    shortlist
+      .map(
+        (c) =>
+          "ID:" +
+          c.manatal_id +
+          " | " +
+          c.full_name +
+          " | " +
+          (c.current_position || "N/A") +
+          " at " +
+          (c.current_company || "N/A") +
+          " | skills: " +
+          (c.skills || []).slice(0, 20).join(", ") +
+          " | " +
+          (c.description || "").substring(0, 400)
+      )
+      .join("\n") +
+    '\n\nReturn ONLY a JSON array: [{"id":123,"green_flag_score":8,"reason":"..."}]';
+
+  try {
+    const resp = await callClaude(prompt, 1500);
+    const m = resp.match(/\[[\s\S]*\]/);
+    if (!m) return { aiApplied: false, reason: "unparseable_response" };
+    const scores = JSON.parse(m[0]);
+
+    const byId = {};
+    for (const s of scores) byId[String(s.id)] = s;
+
+    for (const c of shortlist) {
+      const s = byId[String(c.manatal_id)];
+      if (s && typeof s.green_flag_score === "number") {
+        c.green_flag_score = s.green_flag_score;
+        c.green_flag_reason = s.reason || "";
+        c.final_score = c.match_score + s.green_flag_score * AI_GREEN_WEIGHT;
+      }
+    }
+
+    ranked.sort((a, b) => (b.final_score || 0) - (a.final_score || 0));
+    return { aiApplied: true, scored: shortlist.length };
+  } catch (e) {
+    return { aiApplied: false, reason: "error:" + e.message };
+  }
 }
 
 async function fetchJobs(activeOnly) {
@@ -316,25 +436,42 @@ export default async function handler(req, res) {
   try {
     // ========== SIMPLE SKILL SEARCH ==========
     if (action === "searchBySkills") {
-      const { skills, required, seniority, location, perPage, depth } = params || {};
+      const { skills, required, seniority, location, perPage, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+        params || {};
       if (!skills || !skills.length) return res.status(400).json({ error: "skills array required" });
 
       const terms = Array.from(new Set([...(required || []), ...skills].map(String)));
       const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 50 });
-      const ranked = rankPool(raw, { preferred: skills, required: required || [], seniority, location });
-      const perP = perPage || 100;
+      const ranked = rankPool(raw, {
+        preferred: skills,
+        required: required || [],
+        seniority,
+        location,
+        greenFlags: greenFlags || [],
+      });
 
+      let aiMeta = { aiApplied: false };
+      if (aiGreenFlags !== false) {
+        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      } else {
+        for (const c of ranked) c.final_score = c.match_score;
+      }
+
+      const perP = perPage || 100;
       return res.status(200).json({
         count: Math.min(ranked.length, perP),
         source: "manatal",
         pooled: raw.length,
+        greenFlags: greenFlags || [],
+        aiGreenFlagsApplied: aiMeta.aiApplied,
         candidates: ranked.slice(0, perP),
       });
     }
 
     // ========== MATCH CANDIDATES (multiple skill sets) ==========
     if (action === "matchCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, depth } = params || {};
+      const { skillSets, required, seniority, location, maxTotal, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+        params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
       const limit = maxTotal || 300;
@@ -342,26 +479,57 @@ export default async function handler(req, res) {
       const preferred = Array.from(new Set(skillSets.flat().map(String)));
       const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
       const raw = await buildPool(terms, { depth: depth || 4, pageSize: 100, maxCalls: 60 });
-      const ranked = rankPool(raw, { preferred, required: required || [], seniority, location });
+      const ranked = rankPool(raw, {
+        preferred,
+        required: required || [],
+        seniority,
+        location,
+        greenFlags: greenFlags || [],
+      });
+
+      let aiMeta = { aiApplied: false };
+      if (aiGreenFlags !== false) {
+        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      } else {
+        for (const c of ranked) c.final_score = c.match_score;
+      }
 
       return res.status(200).json({
         count: Math.min(ranked.length, limit),
         source: "manatal",
         searchStats: { terms: terms.length, pooled: raw.length, ranked: ranked.length },
+        greenFlags: greenFlags || [],
+        aiGreenFlagsApplied: aiMeta.aiApplied,
         candidates: ranked.slice(0, limit),
       });
     }
 
     // ========== MATCH APPLIED CANDIDATES (already in a pipeline) ==========
     if (action === "matchAppliedCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth } = params || {};
+      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth, greenFlags, aiGreenFlags, greenFlagLimit } =
+        params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
 
       const preferred = Array.from(new Set(skillSets.flat().map(String)));
       const terms = Array.from(new Set([...(required || []).map(String), ...preferred]));
       const raw = await buildPool(terms, { depth: depth || 3, pageSize: 100, maxCalls: 50 });
-      const ranked = rankPool(raw, { preferred, required: required || [], seniority, location });
+      const ranked = rankPool(raw, {
+        preferred,
+        required: required || [],
+        seniority,
+        location,
+        greenFlags: greenFlags || [],
+      });
+
+      // Apply green flags BEFORE the pipeline check so the shortlist we check is
+      // green-flag-aware (best-fit candidates get pipeline-checked first).
+      let aiMeta = { aiApplied: false };
+      if (aiGreenFlags !== false) {
+        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      } else {
+        for (const c of ranked) c.final_score = c.match_score;
+      }
 
       const jobMap = {};
       try {
@@ -386,6 +554,8 @@ export default async function handler(req, res) {
         source: "manatal",
         totalSearched: ranked.length,
         totalChecked: checked,
+        greenFlags: greenFlags || [],
+        aiGreenFlagsApplied: aiMeta.aiApplied,
         candidates: applied,
       });
     }

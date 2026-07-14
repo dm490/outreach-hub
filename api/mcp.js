@@ -20,13 +20,22 @@
 const SECRET = process.env.MCP_SHARED_SECRET || null;
 const PROTOCOL_FALLBACK = "2025-06-18";
 
-const SERVER_INFO = { name: "manatal-mcp", version: "1.1.0" };
+const SERVER_INFO = { name: "manatal-mcp", version: "1.2.0" };
 
 // ---- Tool definitions (JSON Schema input) ---------------------------------
 
 const SENIORITY_DESC = "Optional target seniority: junior, mid, senior, or lead. Boosts candidates whose title matches.";
 const LOCATION_DESC = "Optional location string (e.g. \"New York\", \"Remote\"). Boosts candidates in that location.";
 const REQUIRED_DESC = "Optional must-have skills. Candidates missing any of these are excluded from results.";
+const GREEN_FLAGS_DESC =
+  "Optional 'green flags': positive, differentiating qualities from the job posting " +
+  "(e.g. \"founded a startup\", \"open-source contributor\", \"scaled a team from 5 to 50\"). " +
+  "Candidates are boosted when they match these -- both by literal keyword and by an AI " +
+  "semantic pass that catches paraphrased/implied evidence. Green flags NEVER exclude anyone; " +
+  "they only add to a candidate's score. Pass the job's actual green flags here when running a match.";
+const AI_GREEN_DESC =
+  "Optional. Set false to skip the AI semantic pass on green flags and use fast keyword-only " +
+  "matching (default true when greenFlags are provided).";
 
 const TOOLS = [
   {
@@ -34,8 +43,8 @@ const TOOLS = [
     description:
       "Search Manatal for candidates matching a list of skills. Samples across the whole " +
       "database (not just alphabetically-early names), then ranks by structured skill tags, " +
-      "seniority, location, and recency. Returns name, email, role, company, location, skills, " +
-      "which skills matched, and a match score.",
+      "seniority, location, recency, and any green flags provided. Returns name, email, role, " +
+      "company, location, skills, which skills matched, matched green flags, and a match score.",
     inputSchema: {
       type: "object",
       properties: {
@@ -45,6 +54,8 @@ const TOOLS = [
           description: 'Preferred (weighted) skills to match, e.g. ["React", "TypeScript"].',
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
+        greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
+        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         perPage: { type: "integer", description: "Results to return, max 100 (default 100)." },
@@ -57,7 +68,9 @@ const TOOLS = [
     name: "match_candidates",
     description:
       "Run several skill-set searches at once, de-duplicate, and rank by skill overlap plus " +
-      "seniority/location/recency. Use when you have multiple skill combinations to cover for a role.",
+      "seniority/location/recency and any green flags. Use when you have multiple skill " +
+      "combinations to cover for a role. Pass the job's green flags to boost candidates who show " +
+      "the positive, differentiating qualities you care about.",
     inputSchema: {
       type: "object",
       properties: {
@@ -67,6 +80,8 @@ const TOOLS = [
           description: 'Array of preferred skill groups, e.g. [["React","Node"],["Python","Django"]].',
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
+        greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
+        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to return (default 300)." },
@@ -79,7 +94,9 @@ const TOOLS = [
     name: "match_applied_candidates",
     description:
       "Like match_candidates, but also checks each candidate's pipeline membership and only " +
-      "returns those already in a job pipeline. Includes their current pipeline stage(s).",
+      "returns those already in a job pipeline. Includes their current pipeline stage(s). " +
+      "Green flags are applied before the pipeline check, so the best-fit applicants are " +
+      "surfaced first.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,6 +106,8 @@ const TOOLS = [
           description: "Array of preferred skill groups.",
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
+        greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
+        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to pull from skill search (default 200)." },
@@ -116,17 +135,44 @@ function toManatalCall(name, args) {
     case "search_candidates_by_skills":
       return {
         action: "searchBySkills",
-        params: { skills: a.skills, required: a.required, seniority: a.seniority, location: a.location, perPage: a.perPage, depth: a.depth },
+        params: {
+          skills: a.skills,
+          required: a.required,
+          greenFlags: a.greenFlags,
+          aiGreenFlags: a.aiGreenFlags,
+          seniority: a.seniority,
+          location: a.location,
+          perPage: a.perPage,
+          depth: a.depth,
+        },
       };
     case "match_candidates":
       return {
         action: "matchCandidates",
-        params: { skillSets: a.skillSets, required: a.required, seniority: a.seniority, location: a.location, maxTotal: a.maxTotal, depth: a.depth },
+        params: {
+          skillSets: a.skillSets,
+          required: a.required,
+          greenFlags: a.greenFlags,
+          aiGreenFlags: a.aiGreenFlags,
+          seniority: a.seniority,
+          location: a.location,
+          maxTotal: a.maxTotal,
+          depth: a.depth,
+        },
       };
     case "match_applied_candidates":
       return {
         action: "matchAppliedCandidates",
-        params: { skillSets: a.skillSets, required: a.required, seniority: a.seniority, location: a.location, maxTotal: a.maxTotal, checkLimit: a.checkLimit },
+        params: {
+          skillSets: a.skillSets,
+          required: a.required,
+          greenFlags: a.greenFlags,
+          aiGreenFlags: a.aiGreenFlags,
+          seniority: a.seniority,
+          location: a.location,
+          maxTotal: a.maxTotal,
+          checkLimit: a.checkLimit,
+        },
       };
     case "list_jobs":
       return { action: "jobs", params: {} };
@@ -153,7 +199,11 @@ function compactCandidate(c) {
     skills: (c.skills || []).slice(0, 30),
     matched_skills: c.matched_skills,
     missing_required: c.missing_required,
+    matched_green_flags: c.matched_green_flags,
+    green_flag_score: c.green_flag_score,
+    green_flag_reason: c.green_flag_reason,
     match_score: c.match_score,
+    final_score: c.final_score,
     education: c.education,
     experience_summary: c.experience_summary,
     ...(c._jobs ? { jobs: c._jobs } : {}),
