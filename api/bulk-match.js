@@ -153,6 +153,42 @@ function candLine(c, stage) {
   );
 }
 
+// Score up to SCORE_BATCH applicants per Claude call. Large fields are split
+// into sub-batches and merged, so a busy role never silently returns empty.
+const SCORE_BATCH = 12;
+
+function buildScorePrompt(job, signal, notes, profiles) {
+  return (
+    "You are an expert recruiter. Rank the applicants for this role by fit.\n\n" +
+    "JOB: " + job.position_name + "\n" +
+    "LOCATION: " + (job.address || "Not specified") + "\n" +
+    "SALARY: $" + (job.salary_min || "?") + " - $" + (job.salary_max || "?") + "\n" +
+    "JOB SIGNAL (green flags, red flags, requirements): " + signal + "\n" +
+    (notes ? "SCREENING CRITERIA: " + notes + "\n" : "") +
+    "\nAPPLICANTS:\n" +
+    profiles.map((p) => candLine(p.c, p.stage)).join("\n") +
+    "\n\nScore EVERY applicant listed 0-100 for fit (return one object per applicant). Weigh GREEN " +
+    "FLAGS as positives and RED FLAGS as negatives, but ONLY when the profile shows real evidence -- " +
+    "ignore any flag you can't assess from a resume (attitude or interview-only signals). Do not " +
+    "auto-reject on an inferred red flag; treat it as a strong negative, not a hard filter.\n\n" +
+    "Return ONLY a JSON array, best first: " +
+    '[{"candidateId":123,"name":"Name","score":85,"title":"Current Title","company":"Company","reason":"one sentence"}]'
+  );
+}
+
+async function scoreChunk(job, signal, notes, profiles) {
+  const prompt = buildScorePrompt(job, signal, notes, profiles);
+  try {
+    const resp = await callClaude(prompt, 3000);
+    const m = resp.match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    const parsed = JSON.parse(m[0]);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
 async function scoreJob(job, applicantRows, candCache, perJob) {
   const profiles = [];
   for (const m of applicantRows) {
@@ -164,32 +200,17 @@ async function scoreJob(job, applicantRows, candCache, perJob) {
   const signal = extractScreeningSignal(job.description || "", 2500);
   const notes = await getJobNotes(job.id);
 
-  const prompt =
-    "You are an expert recruiter. Rank the applicants for this role by fit.\n\n" +
-    "JOB: " + job.position_name + "\n" +
-    "LOCATION: " + (job.address || "Not specified") + "\n" +
-    "SALARY: $" + (job.salary_min || "?") + " - $" + (job.salary_max || "?") + "\n" +
-    "JOB SIGNAL (green flags, red flags, requirements): " + signal + "\n" +
-    (notes ? "SCREENING CRITERIA: " + notes + "\n" : "") +
-    "\nAPPLICANTS:\n" +
-    profiles.map((p) => candLine(p.c, p.stage)).join("\n") +
-    "\n\nScore each applicant 0-100 for fit. Weigh GREEN FLAGS as positives and RED FLAGS as " +
-    "negatives, but ONLY when the profile shows real evidence -- ignore any flag you can't assess " +
-    "from a resume (attitude or interview-only signals). Do not auto-reject on an inferred red flag; " +
-    "treat it as a strong negative, not a hard filter.\n\n" +
-    "Return ONLY a JSON array, best first: " +
-    '[{"candidateId":123,"name":"Name","score":85,"title":"Current Title","company":"Company","reason":"one sentence"}]';
-
-  try {
-    const resp = await callClaude(prompt, 1500);
-    const m = resp.match(/\[[\s\S]*\]/);
-    if (!m) return { scored: [], applicantCount: applicantRows.length };
-    const scored = JSON.parse(m[0]);
-    scored.sort((a, b) => (b.score || 0) - (a.score || 0));
-    return { scored: scored.slice(0, perJob), applicantCount: applicantRows.length };
-  } catch (e) {
-    return { scored: [], applicantCount: applicantRows.length };
+  // Split into sub-batches so no single scoring prompt gets too large to parse.
+  const all = [];
+  for (let i = 0; i < profiles.length; i += SCORE_BATCH) {
+    const chunk = profiles.slice(i, i + SCORE_BATCH);
+    const scored = await scoreChunk(job, signal, notes, chunk);
+    all.push(...scored);
+    if (i + SCORE_BATCH < profiles.length) await wait(300);
   }
+
+  all.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return { scored: all.slice(0, perJob), applicantCount: applicantRows.length };
 }
 
 export default async function handler(req, res) {
