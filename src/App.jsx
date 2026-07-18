@@ -200,9 +200,13 @@ var[jobApplicants,setJobApplicants]=_s({});
 var[pipeline,setPipeline]=_s(function(){try{return JSON.parse(window.localStorage.getItem("pipeline")||"[]")}catch(e){return[]}});
 var[overnightData,setOvernightData]=_s(function(){try{var c=JSON.parse(window.localStorage.getItem("overnightScan"));if(c&&c.ts&&Date.now()-c.ts<43200000)return c.data;return null}catch(e){return null}});
 var[overnightLoading,setOvernightLoading]=_s(false);
+var[bulkData,setBulkData]=_s(null);
+var[bulkLoading,setBulkLoading]=_s(false);
+var[bulkProgress,setBulkProgress]=_s(null);
 var[rfTotal,setRfTotal]=_s(13400);
 var[rtTotal,setRtTotal]=_s(10000);
 var fetchOvernight=async function(){setOvernightLoading(true);try{var r=await fetch("/api/overnight-scan");var d=await r.json();if(d.success){setOvernightData(d);try{window.localStorage.setItem("overnightScan",JSON.stringify({ts:Date.now(),data:d}))}catch(e){}}else{toast({title:"Scan failed",detail:d.error||"Unknown error",status:"error"})}}catch(e){toast({title:"Scan failed",detail:e.message,status:"error"})}setOvernightLoading(false)};
+var fetchBulkMatch=async function(){setBulkLoading(true);setBulkData(null);setBulkProgress({done:0,total:0});try{var cursor=0,jobIds=null,acc=[],total=0,guard=0;while(guard++<40){var r=await fetch("/api/bulk-match",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scope:"newest",newestCount:40,perJob:5,maxApplicants:25,cursor:cursor,jobIds:jobIds})});var d=await r.json();if(!d||d.success!==true){toast({title:"Bulk match failed",detail:(d&&d.error)||("HTTP "+r.status),status:"error"});break}acc=acc.concat(d.results||[]);total=d.totalJobs||total;jobIds=d.jobIds||jobIds;setBulkProgress({done:Math.min((typeof d.nextCursor==="number"?d.nextCursor:total),total),total:total});setBulkData({results:acc.slice(),totalJobs:total});if(d.done){toast({title:"Bulk match complete",detail:acc.length+" roles ranked",status:"success"});break}cursor=d.nextCursor}}catch(e){toast({title:"Bulk match failed",detail:e.message,status:"error"})}setBulkLoading(false)};
 function savePipeline(p){setPipeline(p);window.localStorage.setItem("pipeline",JSON.stringify(p))}
 var toast=function(t){setToasts(function(p){return p.concat([t])});setTimeout(function(){setToasts(function(p){return p.slice(1)})},4000)};
 var getOrgName=function(orgId){var o=orgs.find(function(x){return x.id===orgId});return o?o.name:"Unknown"};
@@ -332,6 +336,27 @@ return(<div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:S.bg,
 <div><div style={{color:"#f1f5f9",fontSize:14,fontWeight:700}}>{intv.candidate}</div><div style={{color:S.dim,fontSize:11}}>{intv.client+" - "+intv.owner}</div></div>
 <div style={{textAlign:"right"}}><div style={{color:intv.outcome==="placed"?"#34d399":intv.outcome==="Eliminated"?"#ef4444":"#f59e0b",fontSize:12,fontWeight:600}}>{intv.outcome==="placed"?"Placed":intv.outcome==="Eliminated"?"ELIMINATED":""+intv.outcome}</div><div style={{color:"#57534e",fontSize:10}}>{intv.date}</div></div>
 </div>})}
+</div>
+<div style={{background:S.card,border:S.border,borderRadius:14,padding:24,marginBottom:16}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+<h3 style={{color:"#f1f5f9",fontSize:15,fontWeight:700,margin:0}}>{"Bulk Match \u2014 Rank Applicants Across Roles"}</h3>
+<button onClick={fetchBulkMatch} disabled={bulkLoading} style={{padding:"10px 20px",borderRadius:10,fontSize:12,fontWeight:700,background:bulkLoading?"rgba(99,102,241,0.2)":"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",color:bulkLoading?"#a5b4fc":"#fff",cursor:bulkLoading?"default":"pointer",boxShadow:bulkLoading?"none":"0 2px 8px rgba(99,102,241,0.25)"}}>{bulkLoading?"Matching...":"Run Bulk Match (40 newest)"}</button>
+</div>
+{bulkLoading&&<div style={{padding:"16px 0",textAlign:"center"}}><span className="sp"/><span style={{color:S.dim,marginLeft:8}}>{"Ranking applicants across roles"+(bulkProgress&&bulkProgress.total?" \u2014 "+bulkProgress.done+" of "+bulkProgress.total+" roles":"")+"..."}</span></div>}
+{!bulkLoading&&!bulkData&&<div style={{padding:"32px 0",textAlign:"center",color:"#57534e"}}><div style={{fontSize:14}}>{"No bulk match results yet"}</div><div style={{fontSize:12,marginTop:6}}>{"Ranks the applicants already in each role's pipeline, weighing each job's green & red flags."}</div></div>}
+{bulkData&&<div>
+{(bulkData.results||[]).map(function(job,ji){return <div key={ji} style={{background:"rgba(255,255,255,0.03)",borderRadius:10,padding:"14px 16px",marginBottom:10}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8,gap:12}}>
+<div style={{color:"#f1f5f9",fontSize:13,fontWeight:700}}>{job.jobTitle}</div>
+<div style={{color:"#78716c",fontSize:11,whiteSpace:"nowrap"}}>{(job.location||"\u2014")+" \u00b7 "+(job.applicantCount||0)+" applicant"+(job.applicantCount===1?"":"s")}</div>
+</div>
+{(!job.scored||job.scored.length===0)&&<div style={{color:"#57534e",fontSize:12,padding:"4px 0"}}>{job.applicantCount?"No ranking returned":"No applicants in pipeline yet"}</div>}
+{(job.scored||[]).map(function(c,ci){var col=c.score>=80?"#34d399":c.score>=60?"#f59e0b":"#ef4444";return <div key={ci} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 8px",background:"rgba(0,0,0,0.25)",borderRadius:8,marginBottom:4}}>
+<div style={{minWidth:34,height:34,borderRadius:"50%",background:col+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:800,color:col}}>{c.score}</div>
+<div style={{flex:1}}><div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>{c.name}{(c.title||c.company)?<span style={{color:"#78716c",fontWeight:400}}>{" \u00b7 "+[c.title,c.company].filter(Boolean).join(" @ ")}</span>:null}</div><div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{c.reason}</div></div>
+</div>})}
+</div>})}
+</div>}
 </div>
 <div style={{background:S.card,border:S.border,borderRadius:14,padding:24}}>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
