@@ -20,7 +20,7 @@
 const SECRET = process.env.MCP_SHARED_SECRET || null;
 const PROTOCOL_FALLBACK = "2025-06-18";
 
-const SERVER_INFO = { name: "manatal-mcp", version: "1.3.0" };
+const SERVER_INFO = { name: "manatal-mcp", version: "1.4.0" };
 
 // ---- Tool definitions (JSON Schema input) ---------------------------------
 
@@ -33,9 +33,16 @@ const GREEN_FLAGS_DESC =
   "Candidates are boosted when they match these -- both by literal keyword and by an AI " +
   "semantic pass that catches paraphrased/implied evidence. Green flags NEVER exclude anyone; " +
   "they only add to a candidate's score. Pass the job's actual green flags here when running a match.";
-const AI_GREEN_DESC =
-  "Optional. Set false to skip the AI semantic pass on green flags and use fast keyword-only " +
-  "matching (default true when greenFlags are provided).";
+const RED_FLAGS_DESC =
+  "Optional 'red flags': disqualifying or negative traits from the job posting " +
+  "(e.g. \"job-hopper\", \"SMB-only background\", \"needs new visa sponsorship\"). Candidates are " +
+  "PENALIZED when they match these -- by literal keyword and by an AI semantic pass that only " +
+  "penalizes on real profile evidence and ignores traits it can't assess from a resume. Red flags " +
+  "are a penalty, NEVER a hard filter -- nobody is excluded, so you still see who was flagged and why. " +
+  "Pass the job's actual red flags here when running a match.";
+const AI_FLAGS_DESC =
+  "Optional. Set false to skip the AI semantic pass on green/red flags and use fast keyword-only " +
+  "matching (default true when any flags are provided).";
 const EXPAND_QUERY_DESC =
   "Optional. Query expansion widens recall by also searching common variants of each skill " +
   "(e.g. \"React\" also finds \"ReactJS\"/\"React.js\", \"Kubernetes\" also finds \"K8s\"). " +
@@ -59,7 +66,8 @@ const TOOLS = [
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
         greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
-        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
+        redFlags: { type: "array", items: { type: "string" }, description: RED_FLAGS_DESC },
+        aiFlags: { type: "boolean", description: AI_FLAGS_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         perPage: { type: "integer", description: "Results to return, max 100 (default 100)." },
@@ -86,7 +94,8 @@ const TOOLS = [
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
         greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
-        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
+        redFlags: { type: "array", items: { type: "string" }, description: RED_FLAGS_DESC },
+        aiFlags: { type: "boolean", description: AI_FLAGS_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to return (default 300)." },
@@ -113,7 +122,8 @@ const TOOLS = [
         },
         required: { type: "array", items: { type: "string" }, description: REQUIRED_DESC },
         greenFlags: { type: "array", items: { type: "string" }, description: GREEN_FLAGS_DESC },
-        aiGreenFlags: { type: "boolean", description: AI_GREEN_DESC },
+        redFlags: { type: "array", items: { type: "string" }, description: RED_FLAGS_DESC },
+        aiFlags: { type: "boolean", description: AI_FLAGS_DESC },
         seniority: { type: "string", description: SENIORITY_DESC },
         location: { type: "string", description: LOCATION_DESC },
         maxTotal: { type: "integer", description: "Max candidates to pull from skill search (default 200)." },
@@ -146,7 +156,8 @@ function toManatalCall(name, args) {
           skills: a.skills,
           required: a.required,
           greenFlags: a.greenFlags,
-          aiGreenFlags: a.aiGreenFlags,
+          redFlags: a.redFlags,
+          aiFlags: a.aiFlags,
           seniority: a.seniority,
           location: a.location,
           perPage: a.perPage,
@@ -161,7 +172,8 @@ function toManatalCall(name, args) {
           skillSets: a.skillSets,
           required: a.required,
           greenFlags: a.greenFlags,
-          aiGreenFlags: a.aiGreenFlags,
+          redFlags: a.redFlags,
+          aiFlags: a.aiFlags,
           seniority: a.seniority,
           location: a.location,
           maxTotal: a.maxTotal,
@@ -176,7 +188,8 @@ function toManatalCall(name, args) {
           skillSets: a.skillSets,
           required: a.required,
           greenFlags: a.greenFlags,
-          aiGreenFlags: a.aiGreenFlags,
+          redFlags: a.redFlags,
+          aiFlags: a.aiFlags,
           seniority: a.seniority,
           location: a.location,
           maxTotal: a.maxTotal,
@@ -212,6 +225,9 @@ function compactCandidate(c) {
     matched_green_flags: c.matched_green_flags,
     green_flag_score: c.green_flag_score,
     green_flag_reason: c.green_flag_reason,
+    matched_red_flags: c.matched_red_flags,
+    red_flag_score: c.red_flag_score,
+    red_flag_reason: c.red_flag_reason,
     match_score: c.match_score,
     final_score: c.final_score,
     education: c.education,

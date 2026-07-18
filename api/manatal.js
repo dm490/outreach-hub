@@ -25,11 +25,13 @@ const MAN_BASE = "https://api.manatal.com/open/v3";
 
 const FIELDS = ["description", "current_position"];
 
-// Green-flag tuning knobs (kept as named constants so they're easy to adjust).
+// Green/red-flag tuning knobs (named constants so they're easy to adjust).
 const GREEN_FLAG_KEYWORD_BONUS = 2; // per green flag whose text appears in the profile
-const AI_GREEN_WEIGHT = 1.0; // green_flag_score (0-10) * weight, added to match_score
+const RED_FLAG_KEYWORD_PENALTY = 2; // per red flag whose text appears in the profile
+const AI_GREEN_WEIGHT = 1.0; // green_flag_score (0-10) * weight, ADDED to match_score
+const AI_RED_WEIGHT = 1.0; // red_flag_score (0-10) * weight, SUBTRACTED from match_score
 const AI_GREEN_MODEL = "claude-sonnet-4-6";
-const AI_GREEN_DEFAULT_LIMIT = 25; // how many top candidates get the AI pass
+const AI_FLAG_DEFAULT_LIMIT = 25; // how many top candidates get the AI flag pass
 
 function strip(html) {
   return (html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -151,10 +153,11 @@ function skillHit(c, termLower) {
   return null;
 }
 
-// Green flags -- deterministic keyword layer. Award a hit when the flag's text
-// shows up in the candidate's title, resume summary, or skill tags. Literal by
-// design; the AI layer below handles paraphrases.
-function greenFlagKeywordHits(c, flagsLower) {
+// Flags (green or red) -- deterministic keyword layer. Return the flags whose
+// text shows up in the candidate's title, resume summary, or skill tags.
+// Literal by design; the AI layer below handles paraphrases. Green-flag hits
+// add score; red-flag hits subtract it. Neither is ever a hard filter.
+function flagKeywordHits(c, flagsLower) {
   if (!flagsLower.length) return [];
   const hay = textHaystack(c) + " " + skillNamesOf(c).join(" ").toLowerCase();
   const hits = [];
@@ -197,7 +200,8 @@ function recencyBonus(c) {
 }
 
 // Score one raw candidate. Returns null if a required skill is missing.
-// opts: { preferred:[], required:[], seniority, location, greenFlags:[] }
+// opts: { preferred:[], required:[], seniority, location, greenFlags:[], redFlags:[] }
+// Green flags add score, red flags subtract it -- neither is ever a hard filter.
 function scoreCandidate(c, opts) {
   const required = (opts.required || []).map((s) => String(s).toLowerCase());
   const preferred = (opts.preferred || []).map((s) => String(s).toLowerCase());
@@ -231,10 +235,16 @@ function scoreCandidate(c, opts) {
 
   // Green flags -- keyword layer (soft bonus, never a filter).
   const greenFlags = (opts.greenFlags || []).map((s) => String(s).toLowerCase());
-  const matchedGreen = greenFlagKeywordHits(c, greenFlags);
+  const matchedGreen = flagKeywordHits(c, greenFlags);
   score += matchedGreen.length * GREEN_FLAG_KEYWORD_BONUS;
 
-  return { score, matched, missingRequired, seniority: candLevel, matchedGreen };
+  // Red flags -- keyword layer (soft penalty, never a filter). A candidate is
+  // never excluded for a red flag; even "auto-disqualify" flags only subtract.
+  const redFlags = (opts.redFlags || []).map((s) => String(s).toLowerCase());
+  const matchedRed = flagKeywordHits(c, redFlags);
+  score -= matchedRed.length * RED_FLAG_KEYWORD_PENALTY;
+
+  return { score, matched, missingRequired, seniority: candLevel, matchedGreen, matchedRed };
 }
 
 // ---- Normalization --------------------------------------------------------
@@ -361,38 +371,59 @@ function rankPool(raw, opts) {
     n.missing_required = s.missingRequired;
     n.seniority = s.seniority;
     n.matched_green_flags = s.matchedGreen;
+    n.matched_red_flags = s.matchedRed;
     out.push(n);
   }
   out.sort((a, b) => b.match_score - a.match_score);
   return out;
 }
 
-// ---- Green flags: AI (semantic) layer -------------------------------------
+// ---- Green + red flags: AI (semantic) layer -------------------------------
 //
-// Runs on the top `limit` keyword-ranked candidates, asks Claude to judge how
-// well each embodies the job's green flags (catching paraphrases the keyword
-// layer misses), and blends that into a final_score used for the final sort.
-// Degrades gracefully: if the key is missing, there are no green flags, or the
-// call fails, every candidate simply keeps match_score as final_score.
-async function applyAiGreenFlags(ranked, greenFlags, limit) {
+// Runs on the top `limit` keyword-ranked candidates in a SINGLE Claude call,
+// asking it to judge how well each embodies the job's green flags and how
+// strongly each trips its red flags (catching paraphrases the keyword layer
+// misses), and blends both into a final_score used for the final sort:
+//   final = match_score + green*AI_GREEN_WEIGHT - red*AI_RED_WEIGHT
+// Red flags are a penalty, NOT a filter -- nobody is excluded. The model is told
+// to only penalize on real profile evidence and to ignore flags it can't assess
+// from a resume (e.g. attitude/interview-only signals), so it doesn't hallucinate
+// negatives. Degrades gracefully: missing key, no flags, or an unparseable reply
+// all leave every candidate with match_score as final_score.
+async function applyAiFlags(ranked, greenFlags, redFlags, limit) {
   // Baseline: everyone's final score starts at their keyword score.
   for (const c of ranked) c.final_score = c.match_score;
 
+  const hasGreen = greenFlags && greenFlags.length;
+  const hasRed = redFlags && redFlags.length;
   if (!ANTHROPIC_KEY) return { aiApplied: false, reason: "no_anthropic_key" };
-  if (!greenFlags || !greenFlags.length) return { aiApplied: false, reason: "no_green_flags" };
+  if (!hasGreen && !hasRed) return { aiApplied: false, reason: "no_flags" };
   if (!ranked.length) return { aiApplied: false, reason: "empty_pool" };
 
-  const shortlist = ranked.slice(0, limit || AI_GREEN_DEFAULT_LIMIT);
+  const shortlist = ranked.slice(0, limit || AI_FLAG_DEFAULT_LIMIT);
 
   const prompt =
-    "You are an expert recruiter. Below is a list of GREEN FLAGS for a role -- " +
-    "positive, differentiating qualities that make a candidate a strong fit. For EACH candidate, " +
-    "judge how well their profile embodies these green flags, INCLUDING paraphrased or implied " +
-    'evidence (e.g. "co-founded an early-stage company" satisfies "startup founder"). ' +
-    "Score 0-10 (0 = no evidence, 10 = clearly embodies most/all) and give a one-line reason.\n\n" +
-    "GREEN FLAGS:\n" +
-    greenFlags.map((f) => "- " + f).join("\n") +
-    "\n\nCANDIDATES:\n" +
+    "You are an expert recruiter scoring candidates against a role's flags.\n" +
+    (hasGreen
+      ? "\nGREEN FLAGS (positive, differentiating qualities -- reward these):\n" +
+        greenFlags.map((f) => "- " + f).join("\n") +
+        "\n"
+      : "") +
+    (hasRed
+      ? "\nRED FLAGS (disqualifying or negative traits -- penalize these):\n" +
+        redFlags.map((f) => "- " + f).join("\n") +
+        "\n"
+      : "") +
+    "\nFor EACH candidate, judge the flags against their profile, INCLUDING paraphrased " +
+    'or implied evidence (e.g. "co-founded an early-stage company" satisfies "startup founder"; ' +
+    '"3 jobs in 2 years" satisfies "job-hopper"). ' +
+    "CRITICAL: only score a flag when the profile shows real evidence for it. If a flag can't be " +
+    "assessed from a resume (attitude, motivation, or interview-only signals like \"isn't proactive\" " +
+    "or \"wants work-life balance\"), IGNORE it -- do not guess. Do not reject anyone outright; red " +
+    "flags are a penalty, not a filter.\n\n" +
+    "Score green_flag_score 0-10 (0 = no evidence, 10 = clearly embodies most/all) and " +
+    "red_flag_score 0-10 (0 = trips no red flags, 10 = clearly trips serious ones). Give a brief reason for each.\n\n" +
+    "CANDIDATES:\n" +
     shortlist
       .map(
         (c) =>
@@ -410,10 +441,11 @@ async function applyAiGreenFlags(ranked, greenFlags, limit) {
           (c.description || "").substring(0, 400)
       )
       .join("\n") +
-    '\n\nReturn ONLY a JSON array: [{"id":123,"green_flag_score":8,"reason":"..."}]';
+    '\n\nReturn ONLY a JSON array: ' +
+    '[{"id":123,"green_flag_score":8,"green_reason":"...","red_flag_score":2,"red_reason":"..."}]';
 
   try {
-    const resp = await callClaude(prompt, 1500);
+    const resp = await callClaude(prompt, 2000);
     const m = resp.match(/\[[\s\S]*\]/);
     if (!m) return { aiApplied: false, reason: "unparseable_response" };
     const scores = JSON.parse(m[0]);
@@ -423,11 +455,19 @@ async function applyAiGreenFlags(ranked, greenFlags, limit) {
 
     for (const c of shortlist) {
       const s = byId[String(c.manatal_id)];
-      if (s && typeof s.green_flag_score === "number") {
+      if (!s) continue;
+      let final = c.match_score;
+      if (typeof s.green_flag_score === "number") {
         c.green_flag_score = s.green_flag_score;
-        c.green_flag_reason = s.reason || "";
-        c.final_score = c.match_score + s.green_flag_score * AI_GREEN_WEIGHT;
+        c.green_flag_reason = s.green_reason || s.reason || "";
+        final += s.green_flag_score * AI_GREEN_WEIGHT;
       }
+      if (typeof s.red_flag_score === "number") {
+        c.red_flag_score = s.red_flag_score;
+        c.red_flag_reason = s.red_reason || "";
+        final -= s.red_flag_score * AI_RED_WEIGHT;
+      }
+      c.final_score = final;
     }
 
     ranked.sort((a, b) => (b.final_score || 0) - (a.final_score || 0));
@@ -486,7 +526,7 @@ export default async function handler(req, res) {
   try {
     // ========== SIMPLE SKILL SEARCH ==========
     if (action === "searchBySkills") {
-      const { skills, required, seniority, location, perPage, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
+      const { skills, required, seniority, location, perPage, depth, greenFlags, redFlags, aiFlags, aiGreenFlags, flagLimit, expandQuery } =
         params || {};
       if (!skills || !skills.length) return res.status(400).json({ error: "skills array required" });
 
@@ -499,11 +539,12 @@ export default async function handler(req, res) {
         seniority,
         location,
         greenFlags: greenFlags || [],
+        redFlags: redFlags || [],
       });
 
       let aiMeta = { aiApplied: false };
-      if (aiGreenFlags !== false) {
-        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      if (aiFlags !== false && aiGreenFlags !== false) {
+        aiMeta = await applyAiFlags(ranked, greenFlags || [], redFlags || [], flagLimit);
       } else {
         for (const c of ranked) c.final_score = c.match_score;
       }
@@ -515,14 +556,15 @@ export default async function handler(req, res) {
         pooled: raw.length,
         queryTerms: terms.length,
         greenFlags: greenFlags || [],
-        aiGreenFlagsApplied: aiMeta.aiApplied,
+        redFlags: redFlags || [],
+        aiFlagsApplied: aiMeta.aiApplied,
         candidates: ranked.slice(0, perP),
       });
     }
 
     // ========== MATCH CANDIDATES (multiple skill sets) ==========
     if (action === "matchCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
+      const { skillSets, required, seniority, location, maxTotal, depth, greenFlags, redFlags, aiFlags, aiGreenFlags, flagLimit, expandQuery } =
         params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
@@ -538,11 +580,12 @@ export default async function handler(req, res) {
         seniority,
         location,
         greenFlags: greenFlags || [],
+        redFlags: redFlags || [],
       });
 
       let aiMeta = { aiApplied: false };
-      if (aiGreenFlags !== false) {
-        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      if (aiFlags !== false && aiGreenFlags !== false) {
+        aiMeta = await applyAiFlags(ranked, greenFlags || [], redFlags || [], flagLimit);
       } else {
         for (const c of ranked) c.final_score = c.match_score;
       }
@@ -552,14 +595,15 @@ export default async function handler(req, res) {
         source: "manatal",
         searchStats: { terms: terms.length, pooled: raw.length, ranked: ranked.length },
         greenFlags: greenFlags || [],
-        aiGreenFlagsApplied: aiMeta.aiApplied,
+        redFlags: redFlags || [],
+        aiFlagsApplied: aiMeta.aiApplied,
         candidates: ranked.slice(0, limit),
       });
     }
 
     // ========== MATCH APPLIED CANDIDATES (already in a pipeline) ==========
     if (action === "matchAppliedCandidates") {
-      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth, greenFlags, aiGreenFlags, greenFlagLimit, expandQuery } =
+      const { skillSets, required, seniority, location, maxTotal, checkLimit, depth, greenFlags, redFlags, aiFlags, aiGreenFlags, flagLimit, expandQuery } =
         params || {};
       if (!skillSets || !skillSets.length)
         return res.status(400).json({ error: "skillSets array required" });
@@ -574,13 +618,14 @@ export default async function handler(req, res) {
         seniority,
         location,
         greenFlags: greenFlags || [],
+        redFlags: redFlags || [],
       });
 
-      // Apply green flags BEFORE the pipeline check so the shortlist we check is
-      // green-flag-aware (best-fit candidates get pipeline-checked first).
+      // Apply flags BEFORE the pipeline check so the shortlist we check is
+      // flag-aware (best-fit candidates get pipeline-checked first).
       let aiMeta = { aiApplied: false };
-      if (aiGreenFlags !== false) {
-        aiMeta = await applyAiGreenFlags(ranked, greenFlags || [], greenFlagLimit);
+      if (aiFlags !== false && aiGreenFlags !== false) {
+        aiMeta = await applyAiFlags(ranked, greenFlags || [], redFlags || [], flagLimit);
       } else {
         for (const c of ranked) c.final_score = c.match_score;
       }
@@ -609,7 +654,8 @@ export default async function handler(req, res) {
         totalSearched: ranked.length,
         totalChecked: checked,
         greenFlags: greenFlags || [],
-        aiGreenFlagsApplied: aiMeta.aiApplied,
+        redFlags: redFlags || [],
+        aiFlagsApplied: aiMeta.aiApplied,
         candidates: applied,
       });
     }

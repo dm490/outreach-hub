@@ -33,6 +33,27 @@ function strip(html) {
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+// Pull the screening-relevant sections (green flags, red flags / traits to
+// avoid, requirements, screening) out of a job description instead of blindly
+// taking the first N characters. These sections sit near the END of the
+// description, so a leading-prefix truncation misses them entirely. Falls back
+// to a generous prefix when no recognizable sections are found.
+const SIGNAL_HEADINGS =
+  /(green\s*flag|red\s*flag|traits?\s*to\s*avoid|non-?ideal|do\s*not\s*source|requirement|qualification|must[- ]?have|nice[- ]?to[- ]?have|screening|ideal\s*compan)/i;
+
+function extractScreeningSignal(html, maxChars) {
+  if (!html) return "";
+  const parts = html.split(/(?=<h[1-3][^>]*>)/i);
+  const kept = [];
+  for (const part of parts) {
+    const h = part.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
+    const heading = h ? strip(h[1]) : "";
+    if (heading && SIGNAL_HEADINGS.test(heading)) kept.push(strip(part));
+  }
+  const signal = kept.join("\n") || strip(html);
+  return signal.substring(0, maxChars || 2500);
+}
+
 function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -84,7 +105,7 @@ export default async function handler(req, res) {
 
     for (const item of topJobs) {
       const job = item.job;
-      const jobDesc = strip(job.description || "").substring(0, 1000);
+      const jobDesc = extractScreeningSignal(job.description || "", 3000);
 
       // Fetch candidate details for new applicants
       const candidateProfiles = [];
@@ -122,13 +143,13 @@ export default async function handler(req, res) {
 JOB: ${job.position_name}
 LOCATION: ${job.address || "Not specified"}
 SALARY: $${job.salary_min || "?"} - $${job.salary_max || "?"}
-DESCRIPTION: ${jobDesc}
-${notes ? "\nSCREENING CRITERIA:\n" + notes.substring(0, 800) : ""}
+JOB SIGNAL (green flags, red flags, requirements): ${jobDesc}
+${notes ? "\nSCREENING CRITERIA:\n" + notes.substring(0, 1500) : ""}
 
 NEW APPLICANTS:
 ${candidateProfiles.map((c) => JSON.stringify(c)).join("\n")}
 
-For each candidate, provide a score (0-100) and a one-line assessment.
+Score each candidate 0-100. Weigh GREEN FLAGS as positives and RED FLAGS as negatives, but only when the profile shows real evidence -- ignore any flag you can't assess from the profile (attitude or interview-only signals). Do not auto-reject on an inferred red flag; treat it as a strong negative, not a hard filter. Give a one-line assessment.
 Return ONLY a JSON array:
 [{"name":"Name","score":85,"assessment":"One line reason"}]`;
 

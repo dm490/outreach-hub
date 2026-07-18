@@ -6,6 +6,27 @@ function strip(html) {
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+// Pull the screening-relevant sections (green flags, red flags / traits to
+// avoid, requirements, screening) out of a job description instead of blindly
+// taking the first N characters. These sections sit near the END of the
+// description, so a leading-prefix truncation misses them entirely. Falls back
+// to a generous prefix when no recognizable sections are found.
+const SIGNAL_HEADINGS =
+  /(green\s*flag|red\s*flag|traits?\s*to\s*avoid|non-?ideal|do\s*not\s*source|requirement|qualification|must[- ]?have|nice[- ]?to[- ]?have|screening|ideal\s*compan)/i;
+
+function extractScreeningSignal(html, maxChars) {
+  if (!html) return "";
+  const parts = html.split(/(?=<h[1-3][^>]*>)/i);
+  const kept = [];
+  for (const part of parts) {
+    const h = part.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
+    const heading = h ? strip(h[1]) : "";
+    if (heading && SIGNAL_HEADINGS.test(heading)) kept.push(strip(part));
+  }
+  const signal = kept.join("\n") || strip(html);
+  return signal.substring(0, maxChars || 2500);
+}
+
 function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -196,7 +217,7 @@ Return ONLY the JSON object.`;
         if (cands.length === 0) continue;
         hasAnyCandidates = true;
 
-        const jobDesc = strip(job.description || "").substring(0, 400);
+        const jobDesc = extractScreeningSignal(job.description || "", 2500);
 
         // Get notes/screening criteria
         let notes = "";
@@ -206,7 +227,7 @@ Return ONLY the JSON object.`;
           notes = notesList
             .map((n) => strip(n.info || ""))
             .join(" ")
-            .substring(0, 300);
+            .substring(0, 1200);
         } catch (e) {}
 
         batchPrompt += `---
@@ -214,7 +235,7 @@ JOB ID: ${job.id}
 TITLE: ${job.position_name}
 LOCATION: ${job.address || "Not specified"}
 SALARY: $${job.salary_min || "?"} - $${job.salary_max || "?"}
-DESCRIPTION: ${jobDesc}
+JOB SIGNAL (green flags, red flags, requirements): ${jobDesc}
 ${notes ? "SCREENING CRITERIA: " + notes : ""}
 
 CANDIDATES:
@@ -231,7 +252,7 @@ ${cands
 
       if (!hasAnyCandidates) continue;
 
-      batchPrompt += `\nFor EACH job above, pick the SINGLE BEST candidate. Follow screening criteria strictly if provided. Candidates who APPLIED get strong priority.
+      batchPrompt += `\nFor EACH job above, pick the SINGLE BEST candidate. Follow screening criteria strictly if provided. Weigh GREEN FLAGS as positives and RED FLAGS as negatives, but only when the candidate's profile shows real evidence -- ignore any flag you can't assess from the profile (attitude or interview-only signals). Do not auto-reject on an inferred red flag; treat it as a strong negative, not a hard filter. Candidates who APPLIED get strong priority.
 
 Return ONLY a JSON array:
 [{"jobId":123,"candidateId":456,"candidateName":"Name","score":85,"title":"Current Title","company":"Current Company","reason":"One sentence why they are the best fit"}]`;
