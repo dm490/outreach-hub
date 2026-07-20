@@ -204,10 +204,13 @@ var[bulkData,setBulkData]=_s(null);
 var[bulkLoading,setBulkLoading]=_s(false);
 var[bulkProgress,setBulkProgress]=_s(null);
 var[bulkSelected,setBulkSelected]=_s(function(){return new Set()});
+var[emailSending,setEmailSending]=_s(false);
+var[emailTo,setEmailTo]=_s("dm@davidjoseph.co");
 var[rfTotal,setRfTotal]=_s(13400);
 var[rtTotal,setRtTotal]=_s(10000);
 var fetchOvernight=async function(){setOvernightLoading(true);try{var r=await fetch("/api/overnight-scan");var d=await r.json();if(d.success){setOvernightData(d);try{window.localStorage.setItem("overnightScan",JSON.stringify({ts:Date.now(),data:d}))}catch(e){}}else{toast({title:"Scan failed",detail:d.error||"Unknown error",status:"error"})}}catch(e){toast({title:"Scan failed",detail:e.message,status:"error"})}setOvernightLoading(false)};
 var fetchBulkMatch=async function(){var ids=Array.from(bulkSelected);if(!ids.length){toast({title:"No roles selected",detail:"Tick at least one role to include.",status:"error"});return}setBulkLoading(true);setBulkData(null);setBulkProgress({done:0,total:ids.length});try{var cursor=0,jobIds=ids,acc=[],total=ids.length,guard=0;while(guard++<80){var r=await fetch("/api/bulk-match",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobIds:jobIds,perJob:5,maxApplicants:25,cursor:cursor})});var d=await r.json();if(!d||d.success!==true){toast({title:"Bulk match failed",detail:(d&&d.error)||("HTTP "+r.status),status:"error"});break}acc=acc.concat(d.results||[]);total=d.totalJobs||total;jobIds=d.jobIds||jobIds;setBulkProgress({done:Math.min((typeof d.nextCursor==="number"?d.nextCursor:total),total),total:total});setBulkData({results:acc.slice(),totalJobs:total});if(d.done){toast({title:"Bulk match complete",detail:acc.length+" roles ranked",status:"success"});break}cursor=d.nextCursor}}catch(e){toast({title:"Bulk match failed",detail:e.message,status:"error"})}setBulkLoading(false)};
+var sendBulkEmail=async function(){if(!bulkData||!((bulkData.results)||[]).length){toast({title:"Nothing to email",detail:"Run a bulk match first.",status:"error"});return}setEmailSending(true);try{var r=await fetch("/api/bulk-email",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({results:bulkData.results,to:emailTo,threshold:80,perRole:2})});var d=await r.json();if(d&&d.success){toast({title:"Summary emailed",detail:d.candidateCount+" prospect"+(d.candidateCount===1?"":"s")+" across "+d.roleCount+" role"+(d.roleCount===1?"":"s")+" sent to "+((d.recipients||[]).join(", ")),status:"success"})}else if(d&&d.reason==="no_candidates_at_threshold"){toast({title:"No prospects at 80+",detail:"No candidates scored 80 or above, so nothing was sent.",status:"error"})}else{var em=(d&&d.error&&(d.error.message||(typeof d.error==="string"?d.error:JSON.stringify(d.error))))||("HTTP "+r.status);toast({title:"Email failed",detail:em,status:"error"})}}catch(e){toast({title:"Email failed",detail:e.message,status:"error"})}setEmailSending(false)};
 var renderBulkCard=function(){return (
 <div style={{background:S.card,border:S.border,borderRadius:14,padding:24,marginBottom:16}}>
 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -245,6 +248,13 @@ var renderBulkCard=function(){return (
 </div>})}
 </div>})}
 </div>}
+{bulkData&&(function(){var q=0,rc=0;(bulkData.results||[]).forEach(function(r){var n=Math.min(((r.scored||[]).filter(function(c){return c.score>=80}).length),2);if(n>0){q+=n;rc++}});return <div style={{marginTop:14,paddingTop:14,borderTop:S.border}}>
+<div style={{fontSize:11,color:S.dim,marginBottom:8}}>{"Email the top 2 prospects per role scoring 80+ to your team \u2014 "+q+" prospect"+(q===1?"":"s")+" across "+rc+" role"+(rc===1?"":"s")+" qualify."}</div>
+<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+<input value={emailTo} onChange={function(e){setEmailTo(e.target.value)}} placeholder="name@company.com, teammate@company.com" style={{flex:1,minWidth:220,padding:"9px 12px",borderRadius:8,border:S.border,background:"rgba(0,0,0,0.25)",color:"#e2e8f0",fontSize:12,outline:"none"}}/>
+<button onClick={sendBulkEmail} disabled={emailSending||q===0} style={{padding:"9px 16px",borderRadius:8,fontSize:12,fontWeight:700,background:(emailSending||q===0)?"rgba(16,185,129,0.2)":"linear-gradient(135deg,#059669,#10b981)",border:"none",color:(emailSending||q===0)?"#6ee7b7":"#fff",cursor:(emailSending||q===0)?"default":"pointer"}}>{emailSending?"Sending...":"Email Top Prospects"}</button>
+</div>
+</div>;})()}
 </div>
 );};
 function savePipeline(p){setPipeline(p);window.localStorage.setItem("pipeline",JSON.stringify(p))}
