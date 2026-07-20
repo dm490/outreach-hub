@@ -206,6 +206,7 @@ var[bulkProgress,setBulkProgress]=_s(null);
 var[bulkSelected,setBulkSelected]=_s(function(){return new Set()});
 var[emailSending,setEmailSending]=_s(false);
 var[emailTo,setEmailTo]=_s("dm@davidjoseph.co");
+var[bulkClient,setBulkClient]=_s("all");
 var[rfTotal,setRfTotal]=_s(13400);
 var[rtTotal,setRtTotal]=_s(10000);
 var fetchOvernight=async function(){setOvernightLoading(true);try{var r=await fetch("/api/overnight-scan");var d=await r.json();if(d.success){setOvernightData(d);try{window.localStorage.setItem("overnightScan",JSON.stringify({ts:Date.now(),data:d}))}catch(e){}}else{toast({title:"Scan failed",detail:d.error||"Unknown error",status:"error"})}}catch(e){toast({title:"Scan failed",detail:e.message,status:"error"})}setOvernightLoading(false)};
@@ -217,20 +218,21 @@ var renderBulkCard=function(){return (
 <h3 style={{color:"#f1f5f9",fontSize:15,fontWeight:700,margin:0}}>{"Bulk Match \u2014 Rank Applicants Across Roles"}</h3>
 <button onClick={fetchBulkMatch} disabled={bulkLoading||bulkSelected.size===0} style={{padding:"10px 20px",borderRadius:10,fontSize:12,fontWeight:700,background:(bulkLoading||bulkSelected.size===0)?"rgba(99,102,241,0.2)":"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",color:(bulkLoading||bulkSelected.size===0)?"#a5b4fc":"#fff",cursor:(bulkLoading||bulkSelected.size===0)?"default":"pointer",boxShadow:(bulkLoading||bulkSelected.size===0)?"none":"0 2px 8px rgba(99,102,241,0.25)"}}>{bulkLoading?"Matching...":("Run Bulk Match ("+bulkSelected.size+" role"+(bulkSelected.size===1?"":"s")+")")}</button>
 </div>
-{!bulkLoading&&(function(){var bj=(jobs||[]).slice().sort(function(a,b){return new Date(b.created_at||0)-new Date(a.created_at||0)});var allIds=bj.map(function(j){return String(j.id)});var new40=allIds.slice(0,40);var qbtn={padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:600,background:"rgba(255,255,255,0.06)",border:S.border,color:"#cbd5e1",cursor:"pointer"};return <div style={{marginBottom:16}}>
+{!bulkLoading&&(function(){var bj=(jobs||[]).slice().sort(function(a,b){return new Date(b.created_at||0)-new Date(a.created_at||0)});var custMap={};bj.forEach(function(j){var oid=String(j.organization||"");if(oid){custMap[oid]=(typeof getOrgName==="function"?getOrgName(j.organization):oid)}});var custList=Object.keys(custMap).map(function(id){return{id:id,name:custMap[id]}}).sort(function(a,b){return String(a.name).localeCompare(String(b.name))});var filtered=bulkClient==="all"?bj:bj.filter(function(j){return String(j.organization)===String(bulkClient)});var allIds=filtered.map(function(j){return String(j.id)});var new40=allIds.slice(0,40);var qbtn={padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:600,background:"rgba(255,255,255,0.06)",border:S.border,color:"#cbd5e1",cursor:"pointer"};return <div style={{marginBottom:16}}>
 <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,flexWrap:"wrap"}}>
-<span style={{fontSize:11,color:S.dim,marginRight:"auto"}}>{bulkSelected.size+" of "+bj.length+" roles selected"}</span>
+<select value={bulkClient} onChange={function(e){setBulkClient(e.target.value)}} style={{padding:"5px 8px",borderRadius:8,fontSize:11,fontWeight:600,background:"rgba(0,0,0,0.3)",border:S.border,color:"#e2e8f0",cursor:"pointer",maxWidth:220}}><option value="all">{"All customers ("+bj.length+")"}</option>{custList.map(function(c){return <option key={c.id} value={c.id}>{c.name}</option>})}</select>
+<span style={{fontSize:11,color:S.dim,marginRight:"auto"}}>{bulkSelected.size+" of "+filtered.length+" selected"}</span>
 <button onClick={function(){setBulkSelected(new Set(new40))}} style={qbtn}>Newest 40</button>
 <button onClick={function(){setBulkSelected(new Set(allIds))}} style={qbtn}>All</button>
 <button onClick={function(){setBulkSelected(new Set())}} style={qbtn}>Clear</button>
 </div>
 <div style={{maxHeight:240,overflowY:"auto",border:S.border,borderRadius:10,padding:6}}>
-{bj.map(function(j){var id=String(j.id);var on=bulkSelected.has(id);return <label key={id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,cursor:"pointer",background:on?"rgba(99,102,241,0.12)":"transparent"}}>
+{filtered.map(function(j){var id=String(j.id);var on=bulkSelected.has(id);return <label key={id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,cursor:"pointer",background:on?"rgba(99,102,241,0.12)":"transparent"}}>
 <input type="checkbox" checked={on} onChange={function(){setBulkSelected(function(prev){var n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n})}}/>
 <span style={{fontSize:12,color:"#e2e8f0",flex:1}}>{j.position_name}</span>
 <span style={{fontSize:10,color:"#78716c",whiteSpace:"nowrap"}}>{j.address||""}</span>
 </label>})}
-{bj.length===0&&<div style={{padding:"20px 0",textAlign:"center",color:"#57534e",fontSize:12}}>Loading roles...</div>}
+{filtered.length===0&&<div style={{padding:"20px 0",textAlign:"center",color:"#57534e",fontSize:12}}>{bj.length===0?"Loading roles...":"No roles for this customer"}</div>}
 </div>
 </div>;})()}
 {bulkLoading&&<div style={{padding:"16px 0",textAlign:"center"}}><span className="sp"/><span style={{color:S.dim,marginLeft:8}}>{"Ranking applicants across roles"+(bulkProgress&&bulkProgress.total?" \u2014 "+bulkProgress.done+" of "+bulkProgress.total+" roles":"")+"..."}</span></div>}
