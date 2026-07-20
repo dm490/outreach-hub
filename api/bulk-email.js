@@ -30,7 +30,7 @@ function scoreColor(s) {
   return s >= 80 ? "#34d399" : s >= 60 ? "#f59e0b" : "#ef4444";
 }
 
-function buildHtml(rolesOut, totalCands, today) {
+function buildHtml(rolesOut, totalCands, today, threshold, perRole) {
   var rolesHtml = rolesOut
     .map(function (role) {
       var cands = role.cands
@@ -88,7 +88,11 @@ function buildHtml(rolesOut, totalCands, today) {
     rolesOut.length +
     " role" +
     (rolesOut.length === 1 ? "" : "s") +
-    "</strong> worth reaching out to. These are the top 2 applicants per role scoring 80 or above. Please start outreach." +
+    "</strong> worth reaching out to. These are the top " +
+    perRole +
+    " applicants per role scoring " +
+    threshold +
+    " or above. Please start outreach." +
     "</div>" +
     rolesHtml +
     '<div style="text-align:center;margin-top:24px;padding-top:16px;border-top:1px solid #1e293b;">' +
@@ -117,7 +121,7 @@ export default async function handler(req, res) {
   body = body || {};
 
   const results = Array.isArray(body.results) ? body.results : [];
-  const threshold = typeof body.threshold === "number" ? body.threshold : 80;
+  const threshold = typeof body.threshold === "number" ? body.threshold : 78;
   const perRole = typeof body.perRole === "number" ? body.perRole : 2;
 
   let to = body.to;
@@ -171,7 +175,7 @@ export default async function handler(req, res) {
     const emailRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: "Bearer " + RESEND_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: FROM, to: to, subject: subject, html: buildHtml(rolesOut, totalCands, today) }),
+      body: JSON.stringify({ from: FROM, to: to, subject: subject, html: buildHtml(rolesOut, totalCands, today, threshold, perRole) }),
     });
     const emailResult = await emailRes.json();
     if (!emailRes.ok) return res.status(502).json({ success: false, sent: false, error: emailResult });
