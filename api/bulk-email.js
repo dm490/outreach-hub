@@ -53,6 +53,13 @@ function buildHtml(rolesOut, totalCands, today, threshold, perRole) {
             (c.reason
               ? '<div style="font-size:12px;color:#cbd5e1;margin-top:4px;">' + esc(c.reason) + "</div>"
               : "") +
+            (c.linkedin
+              ? '<div style="font-size:12px;margin-top:6px;"><a href="' +
+                esc(c.linkedin) +
+                '" style="color:#60a5fa;text-decoration:none;font-weight:600;">' +
+                (c.linkedin_type === "search" ? "Find on LinkedIn \u2192" : "LinkedIn Profile \u2192") +
+                "</a></div>"
+              : "") +
             "</div></div>"
           );
         })

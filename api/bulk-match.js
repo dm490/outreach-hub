@@ -189,6 +189,21 @@ async function scoreChunk(job, signal, notes, profiles) {
   }
 }
 
+// Manatal doesn't store a LinkedIn URL for these candidates, so: use a real
+// profile URL if the candidate included one in their resume/cover-letter text,
+// otherwise build a "find them on LinkedIn" search link from name + company.
+function linkedinFor(c) {
+  const text = (c.description || "") + " " + (c.resume || "");
+  const m = text.match(/(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]+\/?/i);
+  if (m) {
+    let u = m[0].replace(/\/$/, "");
+    if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+    return { url: u, type: "profile" };
+  }
+  const q = encodeURIComponent(((c.full_name || "") + " " + (c.current_company || "")).trim());
+  return { url: "https://www.google.com/search?q=" + q + "+linkedin", type: "search" };
+}
+
 async function scoreJob(job, applicantRows, candCache, perJob) {
   const profiles = [];
   for (const m of applicantRows) {
@@ -196,6 +211,11 @@ async function scoreJob(job, applicantRows, candCache, perJob) {
     if (c) profiles.push({ c, stage: m.stage && m.stage.name ? m.stage.name : null });
   }
   if (!profiles.length) return { scored: [], applicantCount: applicantRows.length };
+
+  const profById = {};
+  profiles.forEach((p) => {
+    profById[String(p.c.id)] = p.c;
+  });
 
   const signal = extractScreeningSignal(job.description || "", 2500);
   const notes = await getJobNotes(job.id);
@@ -210,6 +230,14 @@ async function scoreJob(job, applicantRows, candCache, perJob) {
   }
 
   all.sort((a, b) => (b.score || 0) - (a.score || 0));
+  all.forEach((s) => {
+    const c = profById[String(s.candidateId)];
+    if (c) {
+      const li = linkedinFor(c);
+      s.linkedin = li.url;
+      s.linkedin_type = li.type;
+    }
+  });
   return { scored: all.slice(0, perJob), applicantCount: applicantRows.length };
 }
 
