@@ -171,8 +171,14 @@ function buildScorePrompt(job, signal, notes, profiles) {
     "FLAGS as positives and RED FLAGS as negatives, but ONLY when the profile shows real evidence -- " +
     "ignore any flag you can't assess from a resume (attitude or interview-only signals). Do not " +
     "auto-reject on an inferred red flag; treat it as a strong negative, not a hard filter.\n\n" +
+    "For EACH applicant ALSO assess CREDIBILITY 0-100: how likely their claims are genuine and " +
+    "verifiable. LOWER it for fabricated or internally inconsistent claims, vague/unverifiable " +
+    "achievements, an implausibly broad or padded skill list, or content that reads as generated " +
+    "purely to match this job description. IMPORTANT: polished or AI-assisted writing is NOT itself " +
+    "a credibility problem -- do not penalize good writing; only penalize signs of fabrication, " +
+    "inconsistency, or gaming. Give up to 3 short credibility_flags naming any concern (empty array if none).\n\n" +
     "Return ONLY a JSON array, best first: " +
-    '[{"candidateId":123,"name":"Name","score":85,"title":"Current Title","company":"Company","reason":"one sentence"}]'
+    '[{"candidateId":123,"name":"Name","score":85,"title":"Current Title","company":"Company","reason":"one sentence","credibility":90,"credibility_flags":[]}]'
   );
 }
 
@@ -204,6 +210,37 @@ function linkedinFor(c) {
   return { url: "https://www.google.com/search?q=" + q + "+linkedin", type: "search" };
 }
 
+// Known disposable / temp-mail domains. A disposable email is a strong identity
+// red flag regardless of how polished the resume is. Extend as new ones surface.
+const DISPOSABLE_DOMAINS = new Set([
+  "sorce.email", "mailinator.com", "guerrillamail.com", "10minutemail.com", "tempmail.com",
+  "temp-mail.org", "throwawaymail.com", "yopmail.com", "getnada.com", "trashmail.com",
+  "sharklasers.com", "maildrop.cc", "dispostable.com", "fakeinbox.com", "mohmal.com",
+  "emailondeck.com", "mytemp.email", "tempmailo.com", "moakt.com", "spambog.com",
+  "mailnesia.com", "inboxbear.com", "tempinbox.com", "emltmp.com", "burnermail.io",
+]);
+
+function emailDomain(email) {
+  const e = String(email || "").trim().toLowerCase();
+  const i = e.lastIndexOf("@");
+  return i >= 0 ? e.slice(i + 1) : "";
+}
+
+// Cheap, deterministic authenticity signals from the raw profile. `hard` marks
+// serious identity red flags that should cap credibility on their own.
+function codeFlags(c) {
+  const flags = [];
+  let hard = false;
+  const dom = emailDomain(c.email);
+  if (dom && DISPOSABLE_DOMAINS.has(dom)) {
+    flags.push("disposable email (" + dom + ")");
+    hard = true;
+  }
+  const skillCount = Array.isArray(c.skills) ? c.skills.length : 0;
+  if (skillCount >= 30) flags.push("padded skill list (" + skillCount + " skills)");
+  return { flags, hard, skillCount };
+}
+
 async function scoreJob(job, applicantRows, candCache, perJob) {
   const profiles = [];
   for (const m of applicantRows) {
@@ -229,7 +266,6 @@ async function scoreJob(job, applicantRows, candCache, perJob) {
     if (i + SCORE_BATCH < profiles.length) await wait(300);
   }
 
-  all.sort((a, b) => (b.score || 0) - (a.score || 0));
   all.forEach((s) => {
     const c = profById[String(s.candidateId)];
     if (c) {
@@ -237,7 +273,21 @@ async function scoreJob(job, applicantRows, candCache, perJob) {
       s.linkedin = li.url;
       s.linkedin_type = li.type;
     }
+    // Merge AI credibility with deterministic flags; hard flags cap it hard.
+    const cf = c ? codeFlags(c) : { flags: [], hard: false, skillCount: 0 };
+    let cred = typeof s.credibility === "number" ? s.credibility : 100;
+    if (cf.hard) cred = Math.min(cred, 25);
+    if (cf.skillCount >= 30) cred = Math.min(cred, 60);
+    s.credibility = Math.max(0, Math.min(100, Math.round(cred)));
+    const aiFlags = Array.isArray(s.credibility_flags) ? s.credibility_flags : [];
+    s.flags = cf.flags.concat(aiFlags).slice(0, 5);
+    delete s.credibility_flags;
+    // Adjusted score lowers a candidate's rank as credibility drops (never zeroes).
+    const fit = typeof s.score === "number" ? s.score : 0;
+    s.adjusted_score = Math.round(fit * (0.4 + 0.6 * (s.credibility / 100)));
   });
+
+  all.sort((a, b) => (b.adjusted_score || 0) - (a.adjusted_score || 0));
   return { scored: all.slice(0, perJob), applicantCount: applicantRows.length };
 }
 

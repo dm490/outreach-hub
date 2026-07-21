@@ -53,6 +53,12 @@ function buildHtml(rolesOut, totalCands, today, threshold, perRole) {
             (c.reason
               ? '<div style="font-size:12px;color:#cbd5e1;margin-top:4px;">' + esc(c.reason) + "</div>"
               : "") +
+            (c.flags && c.flags.length
+              ? '<div style="font-size:11px;color:#f59e0b;margin-top:5px;">\u26a0 Verify before outreach: ' +
+                c.flags.map(esc).join("; ") +
+                (typeof c.credibility === "number" ? " (credibility " + esc(c.credibility) + "/100)" : "") +
+                "</div>"
+              : "") +
             (c.linkedin
               ? '<div style="font-size:12px;margin-top:6px;"><a href="' +
                 esc(c.linkedin) +
@@ -142,7 +148,7 @@ export default async function handler(req, res) {
     const scored = (r && r.scored) || [];
     const qualifying = scored
       .filter((c) => typeof c.score === "number" && c.score >= threshold)
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => (b.adjusted_score != null ? b.adjusted_score : b.score) - (a.adjusted_score != null ? a.adjusted_score : a.score))
       .slice(0, perRole);
     if (qualifying.length) {
       rolesOut.push({ title: r.jobTitle, location: r.location, salary: r.salary, cands: qualifying });

@@ -247,7 +247,7 @@ var renderBulkCard=function(){return (
 {(!job.scored||job.scored.length===0)&&<div style={{color:"#57534e",fontSize:12,padding:"4px 0"}}>{job.applicantCount?"No ranking returned":"No applicants in pipeline yet"}</div>}
 {(job.scored||[]).map(function(c,ci){var col=c.score>=80?"#34d399":c.score>=60?"#f59e0b":"#ef4444";return <div key={ci} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 8px",background:"rgba(0,0,0,0.25)",borderRadius:8,marginBottom:4}}>
 <div style={{minWidth:34,height:34,borderRadius:"50%",background:col+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:800,color:col}}>{c.score}</div>
-<div style={{flex:1}}><div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>{c.name}{(c.title||c.company)?<span style={{color:"#78716c",fontWeight:400}}>{" \u00b7 "+[c.title,c.company].filter(Boolean).join(" @ ")}</span>:null}</div><div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{c.reason}</div></div>
+<div style={{flex:1}}><div style={{fontSize:12,fontWeight:700,color:"#f1f5f9"}}>{c.name}{(c.title||c.company)?<span style={{color:"#78716c",fontWeight:400}}>{" \u00b7 "+[c.title,c.company].filter(Boolean).join(" @ ")}</span>:null}</div><div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{c.reason}</div>{c.flags&&c.flags.length?<div style={{fontSize:10,color:"#f59e0b",marginTop:3}}>{"\u26a0 "+c.flags.join("; ")+(typeof c.credibility==="number"?" (cred "+c.credibility+")":"")}</div>:null}</div>
 </div>})}
 </div>})}
 </div>}
